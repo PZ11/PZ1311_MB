@@ -161,6 +161,8 @@ users_prior <- orders %>%
     u_days_cnt = sum(days_since_prior_order, na.rm = T)
   )
 
+
+
 #### Features on User-Product -----------------------------------------
 # order product diff from previous lag 
 orders_prod_prior_diff <- orders_prod_prior %>%
@@ -227,6 +229,12 @@ data$order_dow = NULL
 data$order_hour_of_day = NULL
 data$days_cumsum = NULL
 
+
+
+
+#### Load Data from Environment ############################################
+############################################################################
+############################################################################
 
 
 
@@ -328,6 +336,7 @@ for(i in 17:40)
   }
 }
 print(paste("best_threshold:", best_threshold, "best_f1 is:", best_f1 ))  
+
 
 
 
