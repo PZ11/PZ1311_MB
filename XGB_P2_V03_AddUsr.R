@@ -91,11 +91,13 @@ calc_submit_f1 <- function (acc_th, t, m, xgbM) {
   
   df$f1 <- applyF1Score(df)
   calc_f1 = mean(df$f1)
-  print(paste(" f1 Score is:", calc_f1, 
-              "fact: ",nrow(fact),
-              "fact_missing: ",nrow(missing),
-              "missing: ",nrow(fact_missing),
-              "sub_fact: ",nrow(submission_fact) ))  
+  print(paste(
+    " acc_th is:", acc_th, 
+    " f1 Score is:", calc_f1, 
+    "fact: ",nrow(fact),
+    "fact_missing: ",nrow(missing),
+    "missing: ",nrow(fact_missing),
+    "sub_fact: ",nrow(submission_fact) ))  
   return (calc_f1)
   
 }
@@ -152,7 +154,7 @@ ordert$user_id <- orders$user_id[match(ordert$order_id, orders$order_id)]
 
 
 
-#### Features on Users -----------------------------------------------
+# Get the Users order cout and day count to prepare up features 
 users_prior <- orders %>%
   filter(eval_set == "prior") %>%
   group_by(user_id) %>%
@@ -231,6 +233,64 @@ data$days_cumsum = NULL
 
 
 
+#### Features on Users -----------------------------------------------
+# Get  product count and reordered ratio 
+users_prod_cnt <- orders_prod_prior %>%
+  group_by(user_id) %>%
+  summarise(
+    u_prod_cnt = n(),
+    u_reorder_prod_cnt = sum(reordered,na.rm = T)
+  ) %>%
+mutate(u_reorder_prod_ratio = u_reorder_prod_cnt / u_prod_cnt)
+
+# Get the unique product count and reordered ratio 
+users_unique_prod_cnt <- orders_prod_prior %>%
+  group_by(user_id, product_id) %>%
+  summarise(u_prod_cnt_tmp = 1) %>%
+  group_by(user_id) %>%
+  summarise(u_unique_prod_cnt = n())
+
+users_unique_prod_reordered_cnt <- orders_prod_prior %>%
+  filter(reordered == 1) %>%
+  group_by(user_id, product_id) %>%
+  summarise(u_prod_cnt_tmp = 1) %>%
+  group_by(user_id) %>%
+  summarise(u_unique_reorder_prod_cnt = n())
+
+# Get busket Size 
+users_basket <- orders_prod_prior %>%
+  group_by(user_id, order_id) %>%
+  summarise(
+    user_order_basket = n(),
+    user_basket_reorder_cnt = sum(reordered)
+  ) %>%
+  mutate(user_reorder_ratio = user_basket_reorder_cnt / user_order_basket)%>%
+  group_by(user_id) %>%
+  summarise(
+    u_basket_mean = mean(user_order_basket),
+    u_basket_median = median(user_order_basket), 
+    u_basket_max = max(user_order_basket), 
+    u_basket_sd = sd(user_order_basket), 
+    u_basket_reorder_ratio_mean = mean(user_reorder_ratio),
+    u_basket_reorder_ratio_sd = sd(user_reorder_ratio)
+  )
+
+# Combine all user features 
+users <- users_prod_cnt %>%
+  inner_join(users_basket, by = "user_id") %>%
+  inner_join(users_unique_prod_cnt, by = "user_id") %>%
+  inner_join(users_unique_prod_reordered_cnt, by = "user_id") %>%
+  mutate ( u_unique_reorder_prod_ratio = u_unique_reorder_prod_cnt / u_unique_prod_cnt ) 
+
+
+
+rm(users_prod_cnt, users_unique_prod_cnt, users_unique_prod_reordered_cnt, users_basket)
+
+
+
+
+
+
 
 #### Load Data from Environment ############################################
 ############################################################################
@@ -262,12 +322,14 @@ data <- data %>%
 
 
 # PZ, redefine train and test ----------------------------------
-datanew <- data[data$eval_set == "train", ]
-
 rm(orders_prod_prior_diff, data_op_lag1_diff)
 rm(data_up, users_prior, orders_prod_prior, orders_prod_test)
 rm(orderp, ordert, orders)
 gc()
+
+
+datanew <- data[data$eval_set == "train", ]
+
 
 
 # Train / Test datasets ---------------------------------------------------
@@ -328,6 +390,7 @@ X <- xgb.DMatrix(as.matrix(test %>% select( -user_id, -product_id, -reordered)))
 
 for(i in 17:40)
 {
+  i=19
   acc_threshold = as.numeric(i/100)
   f1 =calc_submit_f1(acc_threshold, test, model, X)
   if (best_f1 < f1) {
