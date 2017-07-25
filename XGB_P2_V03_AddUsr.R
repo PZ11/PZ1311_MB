@@ -129,9 +129,9 @@ products <- products %>%
 rm(aisles, departments)
 
 # Debug, filter to user 1 only -----------------------------------------------
-orders_org <- orders
+#orders_org <- orders
 #orders <- orders_org[user_id == 2 , ]
-orders <- orders_org[user_id <= 10, ]
+#orders <- orders_org[user_id <= 10, ]
 
 
 # Orders data 
@@ -151,9 +151,6 @@ orders_prod_test <- orders %>%
   inner_join(ordert, by = "order_id")
 ordert$user_id <- orders$user_id[match(ordert$order_id, orders$order_id)]
 
-
-
-
 # Get the Users order cout and day count to prepare up features 
 users_prior <- orders %>%
   filter(eval_set == "prior") %>%
@@ -163,6 +160,14 @@ users_prior <- orders %>%
     u_days_cnt = sum(days_since_prior_order, na.rm = T)
   )
 
+
+
+
+
+
+
+
+############# !!! run up here before load data environment #################
 
 
 #### Features on User-Product -----------------------------------------
@@ -233,7 +238,43 @@ data$days_cumsum = NULL
 
 
 
+
+
+
+
+
+############# !!! Place to load data environment #################
+
 #### Features on Users -----------------------------------------------
+user_dow_hod <- orders %>%
+  filter(eval_set == "prior") %>%
+  group_by(user_id) %>%
+  summarise( u_dow_mean = mean(order_dow),
+             u_dow_sd = sd(order_dow),
+             u_hod_mean = mean(order_hour_of_day),
+             u_hod_sd = sd(order_hour_of_day)                   
+             )
+
+user_dspo <- orders %>%
+  filter(eval_set == "prior") %>%
+  group_by(user_id) %>%
+  summarise(
+    u_dspo_mean = mean(days_since_prior_order),
+    u_dspo_sd = sd(days_since_prior_order)
+  )
+
+user_order_f <- user_dow_hod %>%
+  inner_join(user_dspo, by = "user_id") %>%
+  inner_join(orders %>% filter(eval_set != "prior") %>%
+               select(user_id, order_dow, order_hour_of_day, days_since_prior_order), by="user_id") %>%
+  mutate(u_dow_ratio = order_dow / u_dow_mean, 
+         u_hod_ratio = order_hour_of_day / u_hod_mean,
+         u_dspo_ratio = days_since_prior_order / u_dspo_mean)
+               
+user_order_f$order_dow <- NULL
+user_order_f$order_hour_of_day <- NULL
+user_order_f$days_since_prior_order <- NULL
+
 # Get  product count and reordered ratio 
 users_prod_cnt <- orders_prod_prior %>%
   group_by(user_id) %>%
@@ -277,6 +318,7 @@ users_basket <- orders_prod_prior %>%
 
 # Combine all user features 
 users <- users_prod_cnt %>%
+  inner_join(user_order_f, by = "user_id") %>%
   inner_join(users_basket, by = "user_id") %>%
   inner_join(users_unique_prod_cnt, by = "user_id") %>%
   inner_join(users_unique_prod_reordered_cnt, by = "user_id") %>%
@@ -285,10 +327,7 @@ users <- users_prod_cnt %>%
 
 
 rm(users_prod_cnt, users_unique_prod_cnt, users_unique_prod_reordered_cnt, users_basket)
-
-
-
-
+rm(user_dow_hod, user_dspo, user_order_f)
 
 
 
@@ -306,6 +345,9 @@ data <- data %>%
   inner_join(orders %>% filter(eval_set != "prior") %>%
                select ( user_id, eval_set, order_id), by=("user_id")) 
   
+# Add user Features 
+data <- data %>% 
+  left_join(users , by=("user_id")) 
 
 # rm(orders_prod_prior_diff, data_op_lag1_diff)
 # rm(data_up, users_prior, orders_prod_prior, orders_prod_test)
@@ -325,6 +367,8 @@ data <- data %>%
 rm(orders_prod_prior_diff, data_op_lag1_diff)
 rm(data_up, users_prior, orders_prod_prior, orders_prod_test)
 rm(orderp, ordert, orders)
+rm(datanew, test, train, submission, subtrain)
+
 gc()
 
 
@@ -354,10 +398,10 @@ test$eval_set <- NULL
 
 ## PZ, Model -------------------------------------------------------------------
 set.seed(1)
+subtrain <- train %>% sample_frac(0.1)
 # Somehow it doesn't work here 
 #subtrain <- train %>% sample_frac(0.1)
-
-subtrain <- train[sample(nrow(train)/10),]
+#subtrain <- train[sample(nrow(train)/10),]
 
 # #### Original Parameter #########################
 params <- list(
@@ -390,7 +434,6 @@ X <- xgb.DMatrix(as.matrix(test %>% select( -user_id, -product_id, -reordered)))
 
 for(i in 17:40)
 {
-  i=19
   acc_threshold = as.numeric(i/100)
   f1 =calc_submit_f1(acc_threshold, test, model, X)
   if (best_f1 < f1) {
@@ -399,6 +442,59 @@ for(i in 17:40)
   }
 }
 print(paste("best_threshold:", best_threshold, "best_f1 is:", best_f1 ))  
+
+
+
+
+
+
+### PZ, Tune the XGB Parameter ############
+set.seed(1)
+subtrain <- train[sample(nrow(train)/100),]
+
+best_param = list()
+best_seednumber = 1234
+best_logloss = Inf
+best_logloss_index = 0
+
+for (iter in 1:10) {
+
+    iter = 1
+    param <- list(objective = "binary:logistic",
+                  eval_metric = "logloss",
+                  max_depth = sample(6:10, 1),
+                  eta = runif(1, .01, .3),
+                  gamma = runif(1, 0.0, 0.2),
+                  subsample = runif(1, .6, .9),
+                  colsample_bytree = runif(1, .5, .8),
+                  min_child_weight = sample(1:40, 1),
+                  max_delta_step = sample(1:10, 1)
+    )
+
+
+    cv.nround = 200
+    cv.nfold = 5
+    seed.number = sample.int(10000, 1)[[1]]
+    set.seed(seed.number)
+    mdcv <- xgb.cv(data=X, params = param, nthread=6,
+                   nfold=cv.nfold, nrounds=cv.nround,
+                   verbose = T, early.stop.round=4, maximize=FALSE)
+
+
+
+  #min_logloss = min(mdcv[, test.mlogloss.mean])
+  #min_logloss_index = which.min(mdcv[, test.mlogloss.mean])
+
+  min_logloss = min(mdcv$evaluation_log$test_logloss_mean)
+  min_logloss_index = which.min(mdcv$evaluation_log$test_logloss_mean)
+
+  if (min_logloss < best_logloss) {
+    best_logloss = min_logloss
+    best_logloss_index = min_logloss_index
+    best_seednumber = seed.number
+    best_param = param
+  }
+}
 
 
 
@@ -415,7 +511,7 @@ gc()
 # PZ, redefine train and test ----------------------------------
 datanew <- data[,]
 
-acc_threshold <- 0.19
+acc_threshold <- 0.24
 
 train <- as.data.frame(datanew[datanew$eval_set == "train",])
 test <- as.data.frame(datanew[datanew$eval_set == "test",])
@@ -466,6 +562,9 @@ xgb.ggplot.importance(importance)
 
 # Apply model -------------------------------------------------------------
 X <- xgb.DMatrix(as.matrix(test %>% select(-order_id, -product_id)))
+
+acc_threshold <- 0.19
+
 test$pred_reordered <- predict(model, X)
 
 test$pred_reordered <- (test$pred_reordered > acc_threshold) * 1
@@ -483,7 +582,9 @@ missing <- data.frame(
 )
 
 submission <- submission %>% bind_rows(missing) %>% arrange(order_id)
-write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_ph2_try44.csv", row.names = F)
+write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_ph2_try46.csv", row.names = F)
+
+
 
 
 
