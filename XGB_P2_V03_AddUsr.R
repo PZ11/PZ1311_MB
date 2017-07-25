@@ -47,6 +47,12 @@ applyF1Score <- function (df) {
 # Calcualte submit Average F Store 
 calc_submit_f1 <- function (acc_th, t, m, xgbM) {
   
+  # acc_th = 10
+  # t = test
+  # m = model
+  # xgbM = X
+  
+  
   t$pred_reordered <- predict(m, xgbM)
   
   t$pred_reordered <- (t$pred_reordered > acc_th) * 1
@@ -101,6 +107,9 @@ calc_submit_f1 <- function (acc_th, t, m, xgbM) {
   return (calc_f1)
   
 }
+
+
+
 
 # Windows Load Data ---------------------------------------------------------------
 path <- "C:/DEV/MarketBusket/Data_ORG/"
@@ -371,10 +380,27 @@ rm(datanew, test, train, submission, subtrain)
 
 gc()
 
+#PZ, Test with new variables --------------------------------
+datanew <- data.table(
+  user_id = data$user_id,
+  product_id = data$product_id,
+  order_id = data$order_id,
+  
+  up_order_cnt_after_last= data$up_order_cnt_after_last,
+  up_order_rate= data$up_order_rate,
+  up_order_rate_since_fist= data$up_order_rate_since_fist,
+  up_days_lag1_diff_median= data$up_days_lag1_diff_median,
+  up_ordercount_ratio= data$up_ordercount_ratio,
+  up_days_cnt_after_last= data$up_days_cnt_after_last,
+  up_daycount_ratio= data$up_daycount_ratio,
+  up_days_lag1_diff_mean= data$up_days_lag1_diff_mean,
+  up_reorder_cnt= data$up_reorder_cnt,
+  
+  eval_set = data$eval_set,
+  reordered = data$reordered
+  ) 
 
-datanew <- data[data$eval_set == "train", ]
-
-
+datanew <- datanew[eval_set == "train", ]
 
 # Train / Test datasets ---------------------------------------------------
 set.seed(101) 
@@ -432,10 +458,12 @@ test[] <- lapply(test, as.numeric)
 
 X <- xgb.DMatrix(as.matrix(test %>% select( -user_id, -product_id, -reordered)))
 
-for(i in 17:40)
+for(i in 95:100)
 {
-  acc_threshold = as.numeric(i/100)
+  i=106
+  acc_threshold = as.numeric(i/1000)
   f1 =calc_submit_f1(acc_threshold, test, model, X)
+  
   if (best_f1 < f1) {
     best_f1 = f1
     best_threshold = acc_threshold
@@ -444,57 +472,6 @@ for(i in 17:40)
 print(paste("best_threshold:", best_threshold, "best_f1 is:", best_f1 ))  
 
 
-
-
-
-
-### PZ, Tune the XGB Parameter ############
-set.seed(1)
-subtrain <- train[sample(nrow(train)/100),]
-
-best_param = list()
-best_seednumber = 1234
-best_logloss = Inf
-best_logloss_index = 0
-
-for (iter in 1:10) {
-
-    iter = 1
-    param <- list(objective = "binary:logistic",
-                  eval_metric = "logloss",
-                  max_depth = sample(6:10, 1),
-                  eta = runif(1, .01, .3),
-                  gamma = runif(1, 0.0, 0.2),
-                  subsample = runif(1, .6, .9),
-                  colsample_bytree = runif(1, .5, .8),
-                  min_child_weight = sample(1:40, 1),
-                  max_delta_step = sample(1:10, 1)
-    )
-
-
-    cv.nround = 200
-    cv.nfold = 5
-    seed.number = sample.int(10000, 1)[[1]]
-    set.seed(seed.number)
-    mdcv <- xgb.cv(data=X, params = param, nthread=6,
-                   nfold=cv.nfold, nrounds=cv.nround,
-                   verbose = T, early.stop.round=4, maximize=FALSE)
-
-
-
-  #min_logloss = min(mdcv[, test.mlogloss.mean])
-  #min_logloss_index = which.min(mdcv[, test.mlogloss.mean])
-
-  min_logloss = min(mdcv$evaluation_log$test_logloss_mean)
-  min_logloss_index = which.min(mdcv$evaluation_log$test_logloss_mean)
-
-  if (min_logloss < best_logloss) {
-    best_logloss = min_logloss
-    best_logloss_index = min_logloss_index
-    best_seednumber = seed.number
-    best_param = param
-  }
-}
 
 
 
@@ -509,7 +486,6 @@ rm(orderp, ordert, orders)
 gc()
 
 # PZ, redefine train and test ----------------------------------
-datanew <- data[,]
 
 acc_threshold <- 0.24
 
@@ -582,7 +558,7 @@ missing <- data.frame(
 )
 
 submission <- submission %>% bind_rows(missing) %>% arrange(order_id)
-write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_ph2_try46.csv", row.names = F)
+write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_ph2_try49_tmp.csv", row.names = F)
 
 
 
