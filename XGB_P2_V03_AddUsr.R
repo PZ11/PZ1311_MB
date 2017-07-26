@@ -73,8 +73,7 @@ calc_submit_f1 <- function (acc_th, t, m, xgbM) {
   #write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_pz_xgb_01.csv", row.names = F)
   #str(submission)
   
-  
-  #-----------------------------------------------
+
   fact <- t %>%
     filter(reordered == 1) %>%
     group_by(order_id) %>%
@@ -138,8 +137,8 @@ products <- products %>%
 rm(aisles, departments)
 
 # Debug, filter to user 1 only -----------------------------------------------
-#orders_org <- orders
 #orders <- orders_org[user_id == 2 , ]
+#orders_org <- orders
 #orders <- orders_org[user_id <= 10, ]
 
 
@@ -173,9 +172,6 @@ users_prior <- orders %>%
 
 
 
-
-
-
 ############# !!! run up here before load data environment #################
 
 
@@ -197,7 +193,6 @@ data_op_lag1_diff <- orders_prod_prior_diff %>%
     up_order_lag1_diff_mean = mean(up_order_lag1_diff,na.rm = T),
     up_order_lag1_diff_median = median(up_order_lag1_diff,na.rm = T),
 #    up_order_lag1_diff_sd = sd(up_order_lag1_diff,na.rm = T),
-    
     up_days_lag1_diff_max = max(up_days_lag1_diff,na.rm = T),    
     up_days_lag1_diff_mean = mean(up_days_lag1_diff,na.rm = T),
     up_days_lag1_diff_median = median(up_days_lag1_diff,na.rm = T)
@@ -210,9 +205,7 @@ data_up <- orders_prod_prior %>%
     up_order_max = max(order_number,na.rm = T),
     up_order_min = min(order_number,na.rm = T),
     up_reorder_cnt = n(),
-
     up_days_max = max(days_cumsum,na.rm = T),
-    
     up_dow_mean = mean(order_dow,na.rm = T),
 #    up_dow_sd = sd(order_dow,na.rm = T),
     up_hod_mean = mean(order_hour_of_day,na.rm = T),
@@ -245,14 +238,6 @@ data$order_dow = NULL
 data$order_hour_of_day = NULL
 data$days_cumsum = NULL
 
-
-
-
-
-
-
-
-############# !!! Place to load data environment #################
 
 #### Features on Users -----------------------------------------------
 user_dow_hod <- orders %>%
@@ -340,9 +325,9 @@ rm(user_dow_hod, user_dspo, user_order_f)
 
 
 
+
+
 #### Load Data from Environment ############################################
-############################################################################
-############################################################################
 
 
 
@@ -358,29 +343,128 @@ data <- data %>%
 data <- data %>% 
   left_join(users , by=("user_id")) 
 
+############# !!! Place to load data environment #################
+
+
+
+
+
 # rm(orders_prod_prior_diff, data_op_lag1_diff)
 # rm(data_up, users_prior, orders_prod_prior, orders_prod_test)
 # rm(orderp, ordert, orders)
 # gc()
 
-#### Features on recent activies ###########################################
+
+
+
 
 
 # Products ----------------------------------------------------------------
 
 
-# Users -------------------------------------------------------------------
+prod_user_cnt <- orders_prod_prior %>%
+  group_by(product_id) %>%
+  summarise( p_user_cnt = n(), 
+             p_atco_mean = mean(add_to_cart_order),
+             p_atco_median = median(add_to_cart_order))
 
 
-# PZ, redefine train and test ----------------------------------
+prod_reorder_user_cnt <- orders_prod_prior %>%
+  filter(reordered == 1) %>%
+  group_by(product_id) %>%
+summarise( p_reorder_user_cnt = n())
+  
+prod_user_cnt <- prod_user_cnt %>%
+  left_join(prod_reorder_user_cnt, by = "product_id") %>%
+  mutate ( p_reorder_user_rate = p_reorder_user_cnt / p_user_cnt ) 
+
+
+# Get the unique user count 
+prod_unique_user_cnt <- orders_prod_prior %>%
+  group_by(user_id, product_id) %>%
+  summarise(p_user_cnt_tmp = 1) %>%
+  group_by(product_id) %>%
+  summarise(p_unique_user_cnt = n())
+
+
+# Get the unique reordered user count 
+prod_unique_user_reordered_cnt <- orders_prod_prior %>%
+  filter(reordered == 1) %>%
+  group_by(user_id, product_id) %>%
+  summarise(p_user_reorder_cnt_tmp = 1) %>%
+  group_by(product_id) %>%
+  summarise(p_unique_reorder_user_cnt = n())
+  
+
+# Combine all user features 
+prod_features <- prod_user_cnt %>%
+  inner_join( prod_unique_user_cnt , by = "product_id") %>%
+  left_join(prod_unique_user_reordered_cnt, by = "product_id") %>%
+  mutate ( p_unique_reorder_user_ratio = p_unique_reorder_user_cnt / p_unique_user_cnt ) 
+
+prod_features$p_reorder_user_cnt <- NULL
+prod_features$p_unique_reorder_user_cnt <- NULL
+
+rm(prod_unique_user_cnt, prod_unique_user_reordered_cnt, prod_user_cnt, prod_reorder_user_cnt)
+  
+data <- data %>%
+  left_join(prod_features, by = "product_id") 
+
+#### Features on recent activies ###########################################
+
+orders_90d <-  orders %>% 
+  filter(eval_set == "prior") %>%
+  group_by(user_id) %>%
+  mutate( user_period = sum(days_since_prior_order) ) %>%
+  mutate( days_rev = user_period - days_cumsum ) %>%
+  filter(days_rev <= 90) 
+
+
+users_90d <- orders_90d %>%
+  group_by(user_id) %>%
+  summarise(
+    p90d_max_orders = max(order_number),
+    p90d_min_orders = min(order_number)
+  ) %>%
+  mutate( p90d_user_orders = p90d_max_orders - p90d_min_orders + 1 ) %>%
+  select(user_id, p90d_user_orders)
+
+data_90d <- orders_prod_prior %>%
+  inner_join(orders_90d %>% select(user_id, order_id), by=c("user_id", "order_id")) %>%
+  group_by(user_id, product_id) %>% 
+  summarise(
+    p90d_up_orders = n()
+  )
+
+data_90d <- data_90d %>% 
+  inner_join(users_90d, by = "user_id")
+
+data_90d$p90d_up_order_rate <- data_90d$p90d_up_orders / data_90d$p90d_user_orders
+
+#data_90d$p90d_user_orders <- NULL
+
+data <- data %>%
+  left_join(data_90d, by = c("user_id", "product_id")) %>%
+  mutate( p90d_up_order_cnt_ratio_inall = p90d_up_orders / user_order_cnt ) %>%
+  mutate( p90d_u_order_cnt_ratio_inall = p90d_user_orders / user_order_cnt )
+  
+data_10 <- data[data$user_id <= 10, ]
+
+rm(data_90d, orders_90d, users_90d, data_10)
+gc()
+
+# Clean memory, Remove Tables ----------------------------------
 rm(orders_prod_prior_diff, data_op_lag1_diff)
 rm(data_up, users_prior, orders_prod_prior, orders_prod_test)
 rm(orderp, ordert, orders)
 rm(datanew, test, train, submission, subtrain)
+rm(products, prod_features)
 
 gc()
 
-#PZ, Test with new variables --------------------------------
+
+#Test with new variables --------------------------------
+
 datanew <- data.table(
   user_id = data$user_id,
   product_id = data$product_id,
@@ -395,14 +479,32 @@ datanew <- data.table(
   up_daycount_ratio= data$up_daycount_ratio,
   up_days_lag1_diff_mean= data$up_days_lag1_diff_mean,
   up_reorder_cnt= data$up_reorder_cnt,
+
+  p90d_up_orders = data$p90d_up_orders,
+  p90d_user_orders = data$p90d_user_orders,
+  p90d_up_order_rate = data$p90d_up_order_rate,
+  p90d_up_order_cnt_ratio_inall = data$p90d_up_order_cnt_ratio_inall,
+  p90d_u_order_cnt_ratio_inall = data$p90d_u_order_cnt_ratio_inall , 
+
+  p_user_cnt = data$p_user_cnt, 
+  p_atco_mean = data$p_atco_mean,
+  p_atco_median  = data$p_atco_median, 
+  p_unique_user_cnt = data$p_unique_user_cnt,
+  p_unique_reorder_user_ratio = data$p_unique_reorder_user_ratio,
+  p_reorder_user_rate = data$p_reorder_user_rate,
   
   eval_set = data$eval_set,
   reordered = data$reordered
   ) 
 
-datanew <- datanew[eval_set == "train", ]
+rm(data)
+gc()
+
 
 # Train / Test datasets ---------------------------------------------------
+
+datanew <- datanew[eval_set == "train", ]
+
 set.seed(101) 
 userlist = unique(datanew$user_id)
 sample <- sample.int(n = length(userlist), 
@@ -419,17 +521,19 @@ train$order_id <- NULL
 train$reordered[is.na(train$reordered)] <- 0
 
 test$eval_set <- NULL
-#test$user_id <- NULL
+test$user_id <- NULL
 
 
-## PZ, Model -------------------------------------------------------------------
+
+
+#### Original Parameter #########################
+
 set.seed(1)
 subtrain <- train %>% sample_frac(0.1)
 # Somehow it doesn't work here 
 #subtrain <- train %>% sample_frac(0.1)
 #subtrain <- train[sample(nrow(train)/10),]
 
-# #### Original Parameter #########################
 params <- list(
   "objective"           = "binary:logistic",
   "eval_metric"         = "logloss",
@@ -456,12 +560,12 @@ best_threshold = 0
 
 test[] <- lapply(test, as.numeric)
 
-X <- xgb.DMatrix(as.matrix(test %>% select( -user_id, -product_id, -reordered)))
+X <- xgb.DMatrix(as.matrix(test %>% select(  -order_id, -product_id, -reordered)))
 
-for(i in 95:100)
+for(i in 17:30)
 {
-  i=106
-  acc_threshold = as.numeric(i/1000)
+  
+  acc_threshold = as.numeric(i/100)
   f1 =calc_submit_f1(acc_threshold, test, model, X)
   
   if (best_f1 < f1) {
@@ -476,18 +580,17 @@ print(paste("best_threshold:", best_threshold, "best_f1 is:", best_f1 ))
 
 
 
-###########################################################################
+
 ######################### Submit ##########################################
-###########################################################################
+
 # Train / Test datasets ---------------------------------------------------
 rm(orders_prod_prior_diff, data_op_lag1_diff)
 rm(data_up, users_prior, orders_prod_prior, orders_prod_test)
 rm(orderp, ordert, orders)
 gc()
 
-# PZ, redefine train and test ----------------------------------
 
-acc_threshold <- 0.24
+# redefine train and test ----------------------------------
 
 train <- as.data.frame(datanew[datanew$eval_set == "train",])
 test <- as.data.frame(datanew[datanew$eval_set == "test",])
@@ -521,8 +624,6 @@ params <- list(
   "lambda"              = 10,
   "silent"             = 1
 )
-
-# PZ, para 02  -------------------------------------------------------------------
 
 set.seed(1)
 subtrain <- train %>% sample_frac(0.1)
@@ -558,7 +659,11 @@ missing <- data.frame(
 )
 
 submission <- submission %>% bind_rows(missing) %>% arrange(order_id)
-write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_ph2_try49_tmp.csv", row.names = F)
+write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_ph2_try52.csv", row.names = F)
+
+
+
+
 
 
 
