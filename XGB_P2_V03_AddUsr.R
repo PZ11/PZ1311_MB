@@ -100,8 +100,59 @@ calc_submit_f1 <- function (acc_th, t, m, xgbM) {
     " acc_th is:", acc_th, 
     " f1 Score is:", calc_f1, 
     "fact: ",nrow(fact),
-    "fact_missing: ",nrow(missing),
-    "missing: ",nrow(fact_missing),
+    "fact_missing: ",nrow(fact_missing),
+    "missing: ",nrow(missing),
+    "sub_fact: ",nrow(submission_fact) ))  
+  return (calc_f1)
+  
+}
+
+# Calcualte submit Average F Store 
+calc_submit_f1_noPred <- function (t) {
+  
+  submission <- t %>%
+    filter(pred_reordered == 1) %>%
+    group_by(order_id) %>%
+    summarise(
+      products = paste(product_id, collapse = " ")
+    )
+  
+  missing <- data.frame(
+    order_id = unique(t$order_id[!t$order_id %in% submission$order_id]),
+    products = "None"
+  )
+  
+  submission <- submission %>% bind_rows(missing) %>% arrange(order_id)
+  #write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_pz_xgb_01.csv", row.names = F)
+  #str(submission)
+  
+  
+  fact <- t %>%
+    filter(reordered == 1) %>%
+    group_by(order_id) %>%
+    summarise(
+      fact_products = paste(product_id, collapse = " ")
+    )
+  
+  fact_missing <- data.frame(
+    order_id = unique(t$order_id[!t$order_id %in% fact$order_id]),
+    fact_products = "None"
+  )
+  fact <- fact %>% bind_rows(fact_missing) %>% arrange(order_id)
+  
+  submission_fact <- fact %>% 
+    inner_join(submission, by = "order_id") 
+  
+  df <- data.frame(order_id = submission_fact$order_id, 
+                   fact = submission_fact$fact_products,
+                   predicted = submission_fact$products)
+  
+  df$f1 <- applyF1Score(df)
+  calc_f1 = mean(df$f1)
+  print(paste(
+    " f1 Score is:", calc_f1, 
+    "fact: ",nrow(fact),
+    "missing: ",nrow(missing),
     "sub_fact: ",nrow(submission_fact) ))  
   return (calc_f1)
   
@@ -175,7 +226,7 @@ users_prior <- orders %>%
 ############# !!! run up here before load data environment #################
 
 
-#### Features on User-Product -----------------------------------------
+#### User-Product Features -----------------------------------------
 # order product diff from previous lag 
 orders_prod_prior_diff <- orders_prod_prior %>%
   group_by(user_id, product_id) %>%
@@ -239,7 +290,7 @@ data$order_hour_of_day = NULL
 data$days_cumsum = NULL
 
 
-#### Features on Users -----------------------------------------------
+#### User Features-----------------------------------------------
 user_dow_hod <- orders %>%
   filter(eval_set == "prior") %>%
   group_by(user_id) %>%
@@ -323,8 +374,9 @@ users <- users_prod_cnt %>%
 rm(users_prod_cnt, users_unique_prod_cnt, users_unique_prod_reordered_cnt, users_basket)
 rm(user_dow_hod, user_dspo, user_order_f)
 
-
-
+# Add user Features 
+data <- data %>% 
+  left_join(users , by=("user_id")) 
 
 
 #### Load Data from Environment ############################################
@@ -339,25 +391,12 @@ data <- data %>%
   inner_join(orders %>% filter(eval_set != "prior") %>%
                select ( user_id, eval_set, order_id), by=("user_id")) 
   
-# Add user Features 
-data <- data %>% 
-  left_join(users , by=("user_id")) 
-
-############# !!! Place to load data environment #################
-
-
-
 
 
 # rm(orders_prod_prior_diff, data_op_lag1_diff)
 # rm(data_up, users_prior, orders_prod_prior, orders_prod_test)
 # rm(orderp, ordert, orders)
 # gc()
-
-
-
-
-
 
 # Products ----------------------------------------------------------------
 
@@ -400,7 +439,7 @@ prod_unique_user_reordered_cnt <- orders_prod_prior %>%
 prod_features <- prod_user_cnt %>%
   inner_join( prod_unique_user_cnt , by = "product_id") %>%
   left_join(prod_unique_user_reordered_cnt, by = "product_id") %>%
-  mutate ( p_unique_reorder_user_ratio = p_unique_reorder_user_cnt / p_unique_user_cnt ) 
+  mutate ( p_unique_reorder_user_rate = p_unique_reorder_user_cnt / p_unique_user_cnt ) 
 
 prod_features$p_reorder_user_cnt <- NULL
 prod_features$p_unique_reorder_user_cnt <- NULL
@@ -410,7 +449,9 @@ rm(prod_unique_user_cnt, prod_unique_user_reordered_cnt, prod_user_cnt, prod_reo
 data <- data %>%
   left_join(prod_features, by = "product_id") 
 
-#### Features on recent activies ###########################################
+
+
+#### P90D User_Product Features  ###########################################
 
 orders_90d <-  orders %>% 
   filter(eval_set == "prior") %>%
@@ -453,23 +494,33 @@ data_10 <- data[data$user_id <= 10, ]
 rm(data_90d, orders_90d, users_90d, data_10)
 gc()
 
+
+
+
+
+
+############# !!! Place to load data environment #################
+
+
 # Clean memory, Remove Tables ----------------------------------
 rm(orders_prod_prior_diff, data_op_lag1_diff)
 rm(data_up, users_prior, orders_prod_prior, orders_prod_test)
 rm(orderp, ordert, orders)
-rm(datanew, test, train, submission, subtrain)
+rm(datanew, test, train, submission, subtrain, missing)
 rm(products, prod_features)
 
 gc()
 
 
-#Test with new variables --------------------------------
+
+#### Setup datanew with new variables --------------------------------
 
 datanew <- data.table(
   user_id = data$user_id,
   product_id = data$product_id,
   order_id = data$order_id,
-  
+
+  # apply 9 up features  
   up_order_cnt_after_last= data$up_order_cnt_after_last,
   up_order_rate= data$up_order_rate,
   up_order_rate_since_fist= data$up_order_rate_since_fist,
@@ -480,24 +531,28 @@ datanew <- data.table(
   up_days_lag1_diff_mean= data$up_days_lag1_diff_mean,
   up_reorder_cnt= data$up_reorder_cnt,
 
+  
+  # apply 5 p90d features
   p90d_up_orders = data$p90d_up_orders,
   p90d_user_orders = data$p90d_user_orders,
   p90d_up_order_rate = data$p90d_up_order_rate,
   p90d_up_order_cnt_ratio_inall = data$p90d_up_order_cnt_ratio_inall,
   p90d_u_order_cnt_ratio_inall = data$p90d_u_order_cnt_ratio_inall , 
 
+  # apply 6 prod features
   p_user_cnt = data$p_user_cnt, 
   p_atco_mean = data$p_atco_mean,
   p_atco_median  = data$p_atco_median, 
   p_unique_user_cnt = data$p_unique_user_cnt,
   p_unique_reorder_user_ratio = data$p_unique_reorder_user_ratio,
   p_reorder_user_rate = data$p_reorder_user_rate,
-  
+
+
   eval_set = data$eval_set,
   reordered = data$reordered
   ) 
 
-rm(data)
+#rm(data)
 gc()
 
 
@@ -530,7 +585,8 @@ test$user_id <- NULL
 
 set.seed(1)
 subtrain <- train %>% sample_frac(0.1)
-# Somehow it doesn't work here 
+
+#Somehow it doesn't work here 
 #subtrain <- train %>% sample_frac(0.1)
 #subtrain <- train[sample(nrow(train)/10),]
 
@@ -554,34 +610,89 @@ model <- xgboost(data = X, params = params, nrounds = 80)
 importance <- xgb.importance(colnames(X), model = model)
 xgb.ggplot.importance(importance)
 
+
 # Apply model -------------------------------------------------------------
-best_f1 = 0 
-best_threshold = 0
+
+pred_threshold = 0.20
 
 test[] <- lapply(test, as.numeric)
-
 X <- xgb.DMatrix(as.matrix(test %>% select(  -order_id, -product_id, -reordered)))
 
-for(i in 17:30)
-{
-  
-  acc_threshold = as.numeric(i/100)
-  f1 =calc_submit_f1(acc_threshold, test, model, X)
-  
-  if (best_f1 < f1) {
-    best_f1 = f1
-    best_threshold = acc_threshold
-  }
-}
-print(paste("best_threshold:", best_threshold, "best_f1 is:", best_f1 ))  
+
+# #### Get result by fixed threshold 
+test$pred_reordered <- predict(model, X)
+test$pred_reordered <- ( test$pred_reordered > pred_threshold) * 1
+f1 =calc_submit_f1_noPred( test )
 
 
 
+# #### Try different threshold 
+# X <- xgb.DMatrix(as.matrix(test %>% select(  -order_id, -product_id, -reordered)))
+# test$pred_reordered <- predict(model, X)
+# 
+# test[up_reorder_cnt == 1, ]$pred_reordered <- ( test[up_reorder_cnt == 1, ]$pred_reordered > 0.15) * 1
+# test[up_reorder_cnt > 1, ]$pred_reordered <- ( test[up_reorder_cnt > 1, ]$pred_reordered > 0.25) * 1
+# f1 =calc_submit_f1_noPred( test )
 
 
 
+#### Find best combination of the threshold on single and multi orders ######
+#### ? No help to improve result, best threshold is still 0.20 on both single and multiple orders 
+# test$pred_reordered_org <- predict(model, X)
+# test$pred_reordered <- test$pred_reordered_org 
+# 
+# best_acc_th_multiorder = 0 
+# best_acc_th_single_order = 0 
+# best_f1 = 0 
+# 
+# #### Predict and Calcualte F1 Score 
+# for(i in 20:30)
+# {
+#   acc_th_multiorder = as.numeric(i/100)
+#   test[up_reorder_cnt > 1, ]$pred_reordered <- test[up_reorder_cnt > 1, ]$pred_reordered_org
+#   test[up_reorder_cnt > 1, ]$pred_reordered <- ( test[up_reorder_cnt > 1, ]$pred_reordered > acc_th_multiorder) * 1
+#   
+#   for(j in 10:20)
+#   {
+#     acc_th_singleorder = as.numeric(j/100)
+#     test[up_reorder_cnt == 1, ]$pred_reordered <- test[up_reorder_cnt == 1, ]$pred_reordered_org
+#     test[up_reorder_cnt == 1, ]$pred_reordered <- ( test[up_reorder_cnt == 1, ]$pred_reordered > acc_th_singleorder) * 1
+#     
+#     print(paste("acc_th_multiorder:", acc_th_multiorder, "acc_th_singleorder is:", acc_th_singleorder ))
+#     f1 =calc_submit_f1_noPred(test)
+#     
+#     if (best_f1 < f1) {
+#       best_f1 = f1
+#       best_acc_th_multiorder = acc_th_multiorder
+#       best_acc_th_single_order = acc_th_singleorder
+#     }
+#   }
+# }
+# 
+# print(paste("best_acc_th_multiorder:", best_acc_th_multiorder, "best_acc_th_single_order is:", best_acc_th_single_order ))
+# print(paste("best_threshold:", best_threshold, "best_f1 is:", best_f1 ))  
+# 
+# 
+# 
+# 
+# 
+# #### Predict and Calcualte F1 Score 
+# for(i in 17:30)
+# {
+#   
+#   acc_threshold = as.numeric(i/100)
+#   f1 =calc_submit_f1(acc_threshold, test, model, X)
+#   
+#   if (best_f1 < f1) {
+#     best_f1 = f1
+#     best_threshold = acc_threshold
+#   }
+# }
+# print(paste("best_threshold:", best_threshold, "best_f1 is:", best_f1 ))  
+# 
 
-######################### Submit ##########################################
+
+######################### !!! Submit TO LB##########################################
 
 # Train / Test datasets ---------------------------------------------------
 rm(orders_prod_prior_diff, data_op_lag1_diff)
@@ -609,7 +720,7 @@ test$user_id <- NULL
 
 
 
-# Model Origina Para -------------------------------------------------------------------
+# Model Original Para -------------------------------------------------------------------
 
 params <- list(
   "objective"           = "binary:logistic",
@@ -640,7 +751,7 @@ xgb.ggplot.importance(importance)
 # Apply model -------------------------------------------------------------
 X <- xgb.DMatrix(as.matrix(test %>% select(-order_id, -product_id)))
 
-acc_threshold <- 0.19
+acc_threshold <- 0.20
 
 test$pred_reordered <- predict(model, X)
 
@@ -659,7 +770,7 @@ missing <- data.frame(
 )
 
 submission <- submission %>% bind_rows(missing) %>% arrange(order_id)
-write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_ph2_try52.csv", row.names = F)
+write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_ph2_try54_th20.csv", row.names = F)
 
 
 
