@@ -1,4 +1,5 @@
 
+
 ###########################################################################################################
 #
 # Kaggle Instacart competition
@@ -47,10 +48,10 @@ applyF1Score <- function (df) {
 # Calcualte submit Average F Store 
 calc_submit_f1 <- function (acc_th, t, m, xgbM) {
   
-  # acc_th = 10
-  # t = test
-  # m = model
-  # xgbM = X
+  acc_th = 0.2
+  t = test
+  m = model
+  xgbM = X
   
   
   t$pred_reordered <- predict(m, xgbM)
@@ -73,7 +74,7 @@ calc_submit_f1 <- function (acc_th, t, m, xgbM) {
   #write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_pz_xgb_01.csv", row.names = F)
   #str(submission)
   
-
+  
   fact <- t %>%
     filter(reordered == 1) %>%
     group_by(order_id) %>%
@@ -96,6 +97,7 @@ calc_submit_f1 <- function (acc_th, t, m, xgbM) {
   
   df$f1 <- applyF1Score(df)
   calc_f1 = mean(df$f1)
+  
   print(paste(
     " acc_th is:", acc_th, 
     " f1 Score is:", calc_f1, 
@@ -398,8 +400,9 @@ data <- data %>%
 # rm(orderp, ordert, orders)
 # gc()
 
-# Products ----------------------------------------------------------------
 
+
+# Products ----------------------------------------------------------------
 
 prod_user_cnt <- orders_prod_prior %>%
   group_by(product_id) %>%
@@ -411,8 +414,8 @@ prod_user_cnt <- orders_prod_prior %>%
 prod_reorder_user_cnt <- orders_prod_prior %>%
   filter(reordered == 1) %>%
   group_by(product_id) %>%
-summarise( p_reorder_user_cnt = n())
-  
+  summarise( p_reorder_user_cnt = n())
+
 prod_user_cnt <- prod_user_cnt %>%
   left_join(prod_reorder_user_cnt, by = "product_id") %>%
   mutate ( p_reorder_user_rate = p_reorder_user_cnt / p_user_cnt ) 
@@ -433,7 +436,7 @@ prod_unique_user_reordered_cnt <- orders_prod_prior %>%
   summarise(p_user_reorder_cnt_tmp = 1) %>%
   group_by(product_id) %>%
   summarise(p_unique_reorder_user_cnt = n())
-  
+
 
 # Combine all user features 
 prod_features <- prod_user_cnt %>%
@@ -445,10 +448,9 @@ prod_features$p_reorder_user_cnt <- NULL
 prod_features$p_unique_reorder_user_cnt <- NULL
 
 rm(prod_unique_user_cnt, prod_unique_user_reordered_cnt, prod_user_cnt, prod_reorder_user_cnt)
-  
+
 data <- data %>%
   left_join(prod_features, by = "product_id") 
-
 
 
 #### P90D User_Product Features  ###########################################
@@ -493,10 +495,6 @@ data_10 <- data[data$user_id <= 10, ]
 
 rm(data_90d, orders_90d, users_90d, data_10)
 gc()
-
-
-
-
 
 
 ############# !!! Place to load data environment #################
@@ -544,7 +542,7 @@ datanew <- data.table(
   p_atco_mean = data$p_atco_mean,
   p_atco_median  = data$p_atco_median, 
   p_unique_user_cnt = data$p_unique_user_cnt,
-  p_unique_reorder_user_ratio = data$p_unique_reorder_user_ratio,
+  p_unique_reorder_user_rate = data$p_unique_reorder_user_rate,
   p_reorder_user_rate = data$p_reorder_user_rate,
 
 
@@ -624,29 +622,33 @@ test$pred_reordered <- predict(model, X)
 test$pred_reordered <- ( test$pred_reordered > pred_threshold) * 1
 f1 =calc_submit_f1_noPred( test )
 
+
+
+
+# #### Find Best Threshold on F1 Score
+# best_f1 = 0
+# best_threshold = 0 
 # 
-# 
-# #### Predict and Calcualte F1 Score 
-# for(i in 17:30)
+# for(i in 15:22)
 # {
-#   
+# 
 #   acc_threshold = as.numeric(i/100)
 #   f1 =calc_submit_f1(acc_threshold, test, model, X)
-#   
+# 
 #   if (best_f1 < f1) {
 #     best_f1 = f1
 #     best_threshold = acc_threshold
 #   }
 # }
-# print(paste("best_threshold:", best_threshold, "best_f1 is:", best_f1 ))  
+# print(paste("best_threshold:", best_threshold, "best_f1 is:", best_f1 ))
+# 
 # 
 
 
 
 
 
-
-######################### !!! Submit TO LB##########################################
+########################### !!! Submit TO LB   ##################################
 
 # Train / Test datasets ---------------------------------------------------
 rm(orders_prod_prior_diff, data_op_lag1_diff)
@@ -692,6 +694,7 @@ params <- list(
 
 set.seed(1)
 subtrain <- train %>% sample_frac(0.1)
+#subtrain <- train
 X <- xgb.DMatrix(as.matrix(subtrain %>% select(-reordered)), label = subtrain$reordered)
 model <- xgboost(data = X, params = params, nrounds = 80)
 
@@ -731,6 +734,64 @@ write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_ph2_try54_th20.c
 
 
 
+#### "None" Process ##############################
+
+acc_th = 0.2
+t = test
+m = model
+xgbM = X
+
+test_pred <- test[,c("order_id","product_id", "pred_reordered")]
+
+t$pred_reordered_org <- predict(m, xgbM)
+
+t$pred_reordered <- (t$pred_reordered_org > acc_th) * 1
+
+submission <- t %>%
+  filter(pred_reordered == 1) %>%
+  group_by(order_id) %>%
+  summarise(
+    products = paste(product_id, collapse = " ")
+  )
+
+missing <- data.frame(
+  order_id = unique(t$order_id[!t$order_id %in% submission$order_id]),
+  products = "None"
+)
+
+submission <- submission %>% bind_rows(missing) %>% arrange(order_id)
+#write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_pz_xgb_01.csv", row.names = F)
+#str(submission)
 
 
+fact <- t %>%
+  filter(reordered == 1) %>%
+  group_by(order_id) %>%
+  summarise(
+    fact_products = paste(product_id, collapse = " ")
+  )
+
+fact_missing <- data.frame(
+  order_id = unique(t$order_id[!t$order_id %in% fact$order_id]),
+  fact_products = "None"
+)
+fact <- fact %>% bind_rows(fact_missing) %>% arrange(order_id)
+
+submission_fact <- fact %>% 
+  inner_join(submission, by = "order_id") 
+
+df <- data.frame(order_id = submission_fact$order_id, 
+                 fact = submission_fact$fact_products,
+                 predicted = submission_fact$products)
+
+df$f1 <- applyF1Score(df)
+calc_f1 = mean(df$f1)
+
+print(paste(
+  " acc_th is:", acc_th, 
+  " f1 Score is:", calc_f1, 
+  "fact: ",nrow(fact),
+  "fact_missing: ",nrow(fact_missing),
+  "missing: ",nrow(missing),
+  "sub_fact: ",nrow(submission_fact) ))  
 
