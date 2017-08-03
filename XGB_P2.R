@@ -239,7 +239,7 @@ calc_submit_f1_noPred <- function (t) {
 
 
 
-# Windows Load Data ---------------------------------------------------------------
+# !!! Windows Load Data ---------------------------------------------------------------
 path <- "C:/DEV/MarketBusket/Data_ORG/"
 
 #Mac Load Data
@@ -288,6 +288,11 @@ orders_prod_test <- orders %>%
   inner_join(ordert, by = "order_id")
 ordert$user_id <- orders$user_id[match(ordert$order_id, orders$order_id)]
 
+
+
+############# !!! run up here before load data environment #################
+
+
 # Get the Users order cout and day count to prepare up features 
 users_prior <- orders %>%
   filter(eval_set == "prior") %>%
@@ -299,9 +304,6 @@ users_prior <- orders %>%
 
 
 
-
-
-############# !!! run up here before load data environment #################
 
 
 #### User-Product Features -----------------------------------------
@@ -478,7 +480,7 @@ data <- data %>%
 
 
 
-# Products ----------------------------------------------------------------
+#### Products ##########################################################################
 
 prod_user_cnt <- orders_prod_prior %>%
   group_by(product_id) %>%
@@ -574,16 +576,164 @@ gc()
 
 
 
+# ############ Add OrderStreak Feature ###############
+# OSLoad_path <- "C:/DEV/MarketBusket/OtherUsers/OrderSteakFeature"
+# order_steak <- fread(file.path(OSLoad_path, "order_streaks.csv"))
+# 
+# data <- data %>%
+#   left_join(order_steak, by = c("user_id", "product_id"))
+#   
+# rm(order_steak)
+# gc()
+
+
+####  User Dept/Aisle Features  ##################3############################
+
+# ### Dept/Aisle Order Rate and count  
+# aisle_orders <- orders_prod_prior %>%
+#   select(product_id, user_id, reordered) %>%
+#   inner_join(products %>% select(product_id, aisle), by = "product_id") %>%
+#   group_by(user_id, aisle) %>%
+#   summarise(ui_order_cnt = n(), 
+#             ui_unique_prod_cnt = n_distinct(product_id), 
+#             ui_reorder_cnt = sum(reordered)
+#   ) %>%
+#   mutate(ui_reorder_rate = ui_reorder_cnt / ui_order_cnt )
+# 
+# 
+# dept_orders <- orders_prod_prior %>%
+#   select(product_id, user_id, reordered) %>%
+#   inner_join(products %>% select(product_id, department), by = "product_id") %>%
+#   group_by(user_id, department) %>%
+#   summarise(ud_order_cnt = n(), 
+#             ud_unique_prod_cnt = n_distinct(product_id), 
+#             ud_reorder_cnt = sum(reordered)
+#   ) %>%
+#   mutate(ud_reorder_rate = ud_reorder_cnt / ud_order_cnt )
+# 
+# data <- data %>% 
+#   inner_join(products %>% select(product_id, aisle), by = "product_id") %>%
+#   inner_join(products %>% select(product_id, department), by = "product_id") %>%
+#   inner_join(dept_orders , by = c("user_id","department")) %>%
+#   inner_join(aisle_orders , by = c("user_id","aisle"))
+  
+### Dept/Aisle ratio in total 
+
+user_aisle_ratio <- orders_prod_prior %>%
+  select(product_id, user_id, reordered) %>%
+  inner_join(products %>% select(product_id, aisle), by = "product_id") %>%
+  group_by(user_id, aisle) %>%
+  summarise(
+    ui_order_cnt = n(), 
+    ui_unique_prod_cnt = n_distinct(product_id), 
+    ui_reorder_cnt = sum(reordered)
+  ) %>%
+  group_by(user_id) %>%
+  
+  mutate(u_order_cnt = sum(ui_order_cnt)) %>%
+  mutate(u_unique_prod_cnt = sum(ui_unique_prod_cnt)) %>%
+  mutate(u_reorder_cnt = sum(ui_reorder_cnt)) %>%
+  
+  mutate(ui_order_cnt_ratio_in_u = ui_order_cnt / u_order_cnt ) %>%
+  mutate(ui_unique_prod_cnt_ratio_in_u = ui_unique_prod_cnt / u_unique_prod_cnt ) %>%
+  mutate(ui_reorder_ratio_in_u = ui_reorder_cnt / u_reorder_cnt )
+
+
+
+user_dept_ratio <- orders_prod_prior %>%
+  select(product_id, user_id, reordered) %>%
+  inner_join(products %>% select(product_id, department), by = "product_id") %>%
+  group_by(user_id, department) %>%
+  summarise(
+    ud_order_cnt = n(), 
+    ud_unique_prod_cnt = n_distinct(product_id),    
+    ud_reorder_cnt = sum(reordered)
+  ) %>%
+  group_by(user_id) %>%
+  mutate(u_order_cnt = sum(ud_order_cnt)) %>%
+  mutate(u_unique_prod_cnt = sum(ud_unique_prod_cnt)) %>%
+  mutate(u_reorder_cnt = sum(ud_reorder_cnt)) %>%
+  
+  mutate(ud_order_cnt_ratio_in_u = ud_order_cnt / u_order_cnt ) %>%
+  mutate(ud_unique_prod_cnt_ratio_in_u = ud_unique_prod_cnt / u_unique_prod_cnt ) %>%
+  mutate(ud_reorder_ratio_in_u = ud_reorder_cnt / u_reorder_cnt )
+
+
+# dept_ratio <- user_dept_ratio %>%
+#   select(user_id,department, ud_reorder_cnt) %>%
+#   group_by(department) %>%
+#   summarise(
+#     d_reorder_cnt = sum(ud_reorder_cnt)
+#   ) %>%
+#   mutate(reorder_cnt = sum(d_reorder_cnt)) %>%
+#   mutate(d_reorder_ratio_in_all = d_reorder_cnt / reorder_cnt ) %>%
+#   select(department,d_reorder_ratio_in_all )
+#   
+# 
+# aisle_ratio <- user_aisle_ratio %>%
+#   select(user_id,aisle, ui_reorder_cnt) %>%
+#   group_by(aisle) %>%
+#   summarise(
+#     i_reorder_cnt = sum(ui_reorder_cnt)
+#   ) %>%
+#   mutate(reorder_cnt = sum(i_reorder_cnt)) %>%
+#   mutate(i_reorder_ratio_in_all = i_reorder_cnt / reorder_cnt ) %>%
+#   select(aisle,i_reorder_ratio_in_all )
+
+
 ############# !!! Place to load data environment #################
 
-############ Try to Add OrderSteak Feature ###############
-OSLoad_path <- "C:/DEV/MarketBusket/OtherUsers/OrderSteakFeature"
-order_steak <- fread(file.path(OSLoad_path, "order_streaks.csv"))
+load("C:/DEV/GitHub/PZ1311_MB/XGB_Ph2_UP&P90D&P&ProdStreak_20170731.RData")
+
+#dataorg<- data
+
+data <- data %>% 
+  inner_join(products %>% select(product_id, aisle), by = "product_id") %>%
+  inner_join(products %>% select(product_id, department), by = "product_id") %>%
+  inner_join(user_dept_ratio %>% select(user_id, department,ud_reorder_ratio_in_u), by = c("user_id","department")) %>%
+  inner_join(user_aisle_ratio %>% select(user_id, aisle,ui_reorder_ratio_in_u) , by = c("user_id","aisle"))
+
+# data <- data %>% 
+#   inner_join(dept_ratio %>% select( department,d_reorder_ratio_in_all), by = "department") %>%
+#   inner_join(aisle_ratio %>% select( aisle,i_reorder_ratio_in_all) , by = "aisle")
+
+
+#data <- data %>%
+#  inner_join(data_dept_aisle, by = c("user_id", "product_id"))
+  
+rm(aisle_orders, dept_orders, aisle_ratio, dept_ratio, user_dept_ratio, user_aisle_ratio)
+gc()
+
+#### Add DOW same days ratio to prior. #################################
+dow_features <- orders_prod_prior %>%
+  inner_join( orders %>%
+               filter(eval_set != "prior") %>%
+               select ( user_id, order_dow ), by = c("user_id","order_dow")) %>%
+  group_by(user_id, product_id) %>%
+  summarise( up_dow_reorder_cnt = sum(reordered)) %>%
+  inner_join( data %>%
+              select ( user_id, product_id, up_reorder_cnt ), by = c("user_id","product_id")) %>%
+  mutate( up_dow_sameday_ratio_toprior = up_dow_reorder_cnt / up_reorder_cnt)
 
 data <- data %>%
-  left_join(order_steak, by = c("user_id", "product_id"))
-  
-rm(order_steak)
+  left_join(dow_features %>% select(user_id, product_id, up_dow_sameday_ratio_toprior), by = c("user_id","product_id"))
+
+p_dow_features <- orders_prod_prior %>%
+  inner_join( orders %>%
+               filter(eval_set != "prior") %>%
+               select ( user_id, order_dow ), by = c("user_id","order_dow")) %>%
+  group_by(product_id) %>%
+  summarise( p_dow_reorder_cnt = sum(reordered)) %>%
+  inner_join( orders_prod_prior %>%
+                group_by(product_id) %>%
+                summarise( p_reorder_cnt = sum(reordered)), by = "product_id") %>%
+  mutate( p_dow_sameday_ratio_toprior = p_dow_reorder_cnt / p_reorder_cnt)
+
+data <- data %>%
+  left_join(p_dow_features %>% select( product_id, p_dow_sameday_ratio_toprior), by = "product_id")
+
+
+rm(dow_features, p_dow_features)
 gc()
 
 
@@ -593,7 +743,7 @@ rm(data_up, users_prior, orders_prod_prior, orders_prod_test)
 rm(orderp, ordert, orders)
 rm(datanew, test, train, submission, subtrain, missing)
 rm(products, prod_features)
-
+rm(dataorg)
 gc()
 
 
@@ -632,8 +782,31 @@ datanew <- data.table(
   p_unique_reorder_user_rate = data$p_unique_reorder_user_rate,
   p_reorder_user_rate = data$p_reorder_user_rate,
 
-  #order_streak = data$order_streak,
+  order_streak = data$order_streak,
+  
+  # ui_reorder_rate = data$ud_reorder_rate,
+  # ui_unique_prod_cnt = data$ui_unique_prod_cnt,
+  # ui_reorder_cnt = data$ui_reorder_cnt,
+  # 
+  # ud_reorder_rate = data$ud_reorder_rate,
+  # ud_unique_prod_cnt = data$ud_unique_prod_cnt,
+  # ud_reorder_cnt = data$ud_reorder_cnt,  
+  
+  #ud_order_cnt_ratio_in_u = data$ud_order_cnt_ratio_in_u,  
+  #ud_unique_prod_cnt_ratio_in_u = data$ud_unique_prod_cnt_ratio_in_u,  
+  
+  #ui_order_cnt_ratio_in_u = data$ui_order_cnt_ratio_in_u,  
+  #ui_unique_prod_cnt_ratio_in_u = data$ui_unique_prod_cnt_ratio_in_u,  
+  
+  ud_reorder_ratio_in_u = data$ud_reorder_ratio_in_u,  
+  ui_reorder_ratio_in_u = data$ui_reorder_ratio_in_u,  
 
+  #d_reorder_ratio_in_all = data$d_reorder_ratio_in_all,  
+  #i_reorder_ratio_in_all = data$i_reorder_ratio_in_all, 
+  
+  #up_dow_sameday_ratio_toprior = data$up_dow_sameday_ratio_toprior,  
+  #p_dow_sameday_ratio_toprior = data$p_dow_sameday_ratio_toprior,
+  
   eval_set = data$eval_set,
   reordered = data$reordered
   ) 
@@ -698,13 +871,14 @@ xgb.ggplot.importance(importance)
 
 
 # Apply model -------------------------------------------------------------
-pred_threshold = 0.20
+
 
 test[] <- lapply(test, as.numeric)
 X <- xgb.DMatrix(as.matrix(test %>% select( -user_id, -order_id, -product_id, -reordered)))
 
 
 #Get result by fixed threshold 
+#pred_threshold = 0.20
 #test$pred_reordered_org <- predict(model, X)
 #test$pred_reordered <- ( test$pred_reordered_org > pred_threshold) * 1
 #f1 =calc_submit_f1_noPred( test )
@@ -726,8 +900,6 @@ for(i in 19:21)
   }
 }
 print(paste("best_threshold:", best_threshold, "best_f1 is:", best_f1 ))
-
-
 
 
 
@@ -817,66 +989,66 @@ missing <- data.frame(
 )
 
 submission <- submission %>% bind_rows(missing) %>% arrange(order_id)
-
-#### Add None to single produdct submission 
-
-Add_None_Threshold_1p = 0.5
-Add_None_Threshold_2p = 0.41
-Add_None_Threshold_3p = 0.32
-
-
-test_single_prod <- test %>%
-  group_by(order_id) %>%
-  mutate(prodcnt = sum(pred_reordered)) %>%
-  filter(prodcnt == 1 & pred_reordered == 1 & pred_reordered_org <= Add_None_Threshold_1p)
-
-submission_singlewithNone <- submission[submission$order_id %in% test_single_prod$order_id,] %>%
-  group_by(order_id) %>%
-  summarise(
-    products = paste( products, "None", collapse = " ")
-  )
-
-submission_new <- submission[! submission$order_id %in% submission_singlewithNone$order_id,] 
-submission <- submission_new %>% bind_rows(submission_singlewithNone) %>% arrange(order_id)
-
-#### Add None to 2 products submit 
-t_2_prod <- test %>%
-  group_by(order_id) %>%
-  mutate(prodcnt = sum(pred_reordered)) %>%
-  filter(prodcnt == 2 & pred_reordered == 1 ) %>%
-  mutate (pred_mean = mean(pred_reordered_org)) %>%
-  filter(pred_mean <= Add_None_Threshold_2p )
-
-submission_2p_withNone <- submission[submission$order_id %in% t_2_prod$order_id,] %>%
-  group_by(order_id) %>%
-  summarise(
-    products = paste( products, "None", collapse = " ")
-  )
-
-submission_new <- submission[! submission$order_id %in% submission_2p_withNone$order_id,] 
-submission <- submission_new %>% bind_rows(submission_2p_withNone) %>% arrange(order_id)
-
-
-#### Add None to 3 products submit 
-t_3_prod <- test %>%
-  group_by(order_id) %>%
-  mutate(prodcnt = sum(pred_reordered)) %>%
-  filter(prodcnt == 3 & pred_reordered == 1 ) %>%
-  mutate (pred_mean = mean(pred_reordered_org)) %>%
-  filter(pred_mean <= Add_None_Threshold_3p )
-submission_3p_withNone <- submission[submission$order_id %in% t_3_prod$order_id,] %>%
-  group_by(order_id) %>%
-  summarise(
-    products = paste( products, "None", collapse = " ")
-  )
-submission_new <- submission[! submission$order_id %in% submission_3p_withNone$order_id,] 
-submission <- submission_new %>% bind_rows(submission_3p_withNone) %>% arrange(order_id)
+# 
+# #### Add None to single produdct submission 
+# 
+# Add_None_Threshold_1p = 0.5
+# Add_None_Threshold_2p = 0.41
+# Add_None_Threshold_3p = 0.32
+# 
+# 
+# test_single_prod <- test %>%
+#   group_by(order_id) %>%
+#   mutate(prodcnt = sum(pred_reordered)) %>%
+#   filter(prodcnt == 1 & pred_reordered == 1 & pred_reordered_org <= Add_None_Threshold_1p)
+# 
+# submission_singlewithNone <- submission[submission$order_id %in% test_single_prod$order_id,] %>%
+#   group_by(order_id) %>%
+#   summarise(
+#     products = paste( products, "None", collapse = " ")
+#   )
+# 
+# submission_new <- submission[! submission$order_id %in% submission_singlewithNone$order_id,] 
+# submission <- submission_new %>% bind_rows(submission_singlewithNone) %>% arrange(order_id)
+# 
+# #### Add None to 2 products submit 
+# t_2_prod <- test %>%
+#   group_by(order_id) %>%
+#   mutate(prodcnt = sum(pred_reordered)) %>%
+#   filter(prodcnt == 2 & pred_reordered == 1 ) %>%
+#   mutate (pred_mean = mean(pred_reordered_org)) %>%
+#   filter(pred_mean <= Add_None_Threshold_2p )
+# 
+# submission_2p_withNone <- submission[submission$order_id %in% t_2_prod$order_id,] %>%
+#   group_by(order_id) %>%
+#   summarise(
+#     products = paste( products, "None", collapse = " ")
+#   )
+# 
+# submission_new <- submission[! submission$order_id %in% submission_2p_withNone$order_id,] 
+# submission <- submission_new %>% bind_rows(submission_2p_withNone) %>% arrange(order_id)
+# 
+# 
+# #### Add None to 3 products submit 
+# t_3_prod <- test %>%
+#   group_by(order_id) %>%
+#   mutate(prodcnt = sum(pred_reordered)) %>%
+#   filter(prodcnt == 3 & pred_reordered == 1 ) %>%
+#   mutate (pred_mean = mean(pred_reordered_org)) %>%
+#   filter(pred_mean <= Add_None_Threshold_3p )
+# submission_3p_withNone <- submission[submission$order_id %in% t_3_prod$order_id,] %>%
+#   group_by(order_id) %>%
+#   summarise(
+#     products = paste( products, "None", collapse = " ")
+#   )
+# submission_new <- submission[! submission$order_id %in% submission_3p_withNone$order_id,] 
+# submission <- submission_new %>% bind_rows(submission_3p_withNone) %>% arrange(order_id)
 
 
 ## When prediction is less than 0.25, submit to None Only, no help
 # submission[submission$order_id %in% test_single_prod[test_single_prod$pred_reordered_org <= 0.25, ]$order_id,]$products = "None"
 
-write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_fbqh_try62_th20_None1s2s3s4s.csv", row.names = F)
+write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_fbqh_try17_th20_NoNone.csv", row.names = F)
 
 
 
@@ -1090,8 +1262,11 @@ write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_fbqh_try62_th20_
 
 
 ###################################################################33
-opp_10 <- orders_prod_prior[orders_prod_prior$user_id==10,]
+# opp_10 <- orders_prod_prior[orders_prod_prior$user_id==10,]
 o_10 <- orders[orders$user_id==10,]
-opt_10 <- orders_prod_test[orders_prod_test$user_id==10,]
+# opt_10 <- orders_prod_test[orders_prod_test$user_id==10,]
+# data_10 <- data[data$user_id <= 10, ]
+
+
 
 
