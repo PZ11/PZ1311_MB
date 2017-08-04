@@ -1,13 +1,13 @@
 
 
-###########################################################################################################
+####
 #
 # Kaggle Instacart competition
 # Paul Zhang, July 2017
 # Phase 2, on xgboost starter, start score as 0.3818, submit 42
 # Try to add all the variables based on artical of "Repeat Buyer Prediction for E-Commerce" 
 #
-###########################################################################################################
+####
 
 options(warn=-1)
 #options(warn=0)
@@ -18,6 +18,199 @@ library(tidyr)
 library(xgboost)
 #library(matrix)
 library(zoo)
+
+# Author: Faron, Lukasz Grad
+#
+# Quite fast implementation of Faron's expected F1 maximization using Rcpp and R
+library(inline)
+library(Rcpp)
+Sys.setenv("PKG_CXXFLAGS"="-std=c++11")
+
+
+
+# Input: p: item reorder probabilities (sorted), p_none: none probability (0 if not specified)
+# Output: matrix[2][n + 1] out: out[0][j] - F1 score with top j products and None
+#                               out[1][j] - F1 score with top j products
+cppFunction(
+  'NumericMatrix get_expectations(NumericVector p, double p_none) {
+  // Assuming p is sorted, p_none == 0 if not specified
+  int n = p.size();
+  NumericMatrix expectations = NumericMatrix(2, n + 1);
+  double DP_C[n + 2][n + 1];
+  std::fill(DP_C[0], DP_C[0] + (n + 2) * (n + 1), 0);
+  if (p_none == 0.0) {
+  p_none = std::accumulate(p.begin(), p.end(), 1.0, [](double &a, double &b) {return a * (1.0 - b);});
+  }
+  DP_C[0][0] = 1.0;
+  for (int j = 1; j < n; ++j)
+  DP_C[0][j] = (1.0 - p[j - 1]) * DP_C[0][j - 1];
+  for (int i = 1; i < n + 1; ++i) {
+  DP_C[i][i] = DP_C[i - 1][i - 1] * p[i - 1];
+  for (int j = i + 1; j < n + 1; ++j)
+  DP_C[i][j] = p[j - 1] * DP_C[i - 1][j - 1] + (1.0 - p[j - 1]) * DP_C[i][j - 1];
+  }
+  double DP_S[2 * n + 1];
+  double DP_SNone[2 * n + 1];
+  for (int i = 1; i < (2 * n + 1); ++i) {
+  DP_S[i] = 1.0 / (1.0 * i);
+  DP_SNone[i] = 1.0 / (1.0 * i + 1);
+  }
+  for (int k = n; k >= 0; --k) {
+  double f1 = 0.0;
+  double f1None = 0.0;
+  for (int k1 = 0; k1 < (n + 1); ++k1) {
+  f1 += 2 * k1 * DP_C[k1][k] * DP_S[k + k1];
+  f1None += 2 * k1 * DP_C[k1][k] * DP_SNone[k + k1];
+  }
+  for (int i = 1; i < (2 * k - 1); ++i) {
+  DP_S[i] = (1 - p[k - 1]) * DP_S[i] + p[k - 1] * DP_S[i + 1];
+  DP_SNone[i] = (1 - p[k - 1]) * DP_SNone[i] + p[k - 1] * DP_SNone[i + 1];
+  }
+  expectations(0, k) = f1None + 2 * p_none / (2.0 + k);
+  expectations(1, k) = f1;
+  }
+  return expectations;
+  }'
+)
+
+# Input: ps - item reorder probabilities, prods - item ids
+# Output: reordered items string (as required in submission)
+exact_F1_max_none <- function(ps, prods) {
+  prods <- sapply(prods, as.character)
+  perm <- order(ps, decreasing = T)
+  ps <- ps[perm]
+  prods <- prods[perm]
+  expectations <-  get_expectations(ps, 0.0)
+  max_idx <-  which.max(expectations)
+  add_none <- max_idx %% 2 == 1
+  size <- as.integer(max(0, max_idx - 1) / 2)
+  if (size == 0) {
+    return("None")
+  }
+  else {
+#    if (add_none)
+#      return(paste(c(prods[1:size], "None"), collapse = " "))
+#    else 
+      return(paste(prods[1:size], collapse = " "))
+  }
+}
+
+
+# How to use it with dplyr:
+#
+# submission <- data %>%
+#        group_by(order_id) %>%
+#        summarise(products = exact_F1_max_none(reordered_prob, product_id))
+
+# Quick example
+# exact_F1_max_none(c(0.5, 0.9, 0.8, 0.1, 0.2, 0.3), c(129832, 1024, 32, 432, 1421, 1032))
+
+
+
+exact_F1_max_none_size <- function(ps, prods) {
+  prods <- sapply(prods, as.character)
+  perm <- order(ps, decreasing = T)
+  ps <- ps[perm]
+  prods <- prods[perm]
+  expectations <-  get_expectations(ps, 0.0)
+  max_idx <-  which.max(expectations)
+  add_none <- max_idx %% 2 == 1
+  size <- as.integer(max(0, max_idx - 1) / 2)
+  return(size)
+}
+
+# R port of Faron's F1-Score Expectation Maximization
+## F1 Expectation over increasing list of items
+get_expectation <- function(P, pNone=NULL){
+  
+  expectations <- NULL
+  
+  P <- sort(P, decreasing = T)
+  n <- length(P)
+  
+  DP_C = matrix(0, nrow = n+2, ncol=n+1)
+  
+  if (is.null(pNone)) pNone <- prod(1.0 - P)
+  
+  DP_C[1, 1] = 1.0
+  
+  for (j in 1:(n-1)) {
+    DP_C[1, j+1] = (1.0 - P[j]) * DP_C[1, j]
+  }
+  
+  for (i in 1:n) {
+    DP_C[i+1, i+1] = DP_C[i, i] * P[i]
+    if (i<n) {
+      for (j in (i+1):n) {
+        DP_C[i+1, j+1] = P[j] * DP_C[i, j] + (1 - P[j]) * DP_C[i+1, j]
+      }
+    }
+  }
+  
+  DP_S = numeric(2 * n + 1)
+  DP_SNone = numeric(2 * n + 1)
+  
+  for (i in 1:(2*n)){
+    DP_S[i+1] = 1/i
+    DP_SNone[i+1] = 1/(i+1)
+  }
+  
+  for (k in (n+1):1) {
+    f1 = 0
+    f1None = 0
+    for (k1 in 1:(n+1)) {
+      f1 <- f1 + 2 * (k1-1) * DP_C[k1, k] * DP_S[k + k1 -1]
+      f1None <- f1None + 2 * (k1-1) * DP_C[k1, k] * DP_SNone[k + k1 -1]
+    }
+    if (2*(k-1) - 2 > 1){
+      for (i in 1:(2*(k-1) - 2)) {
+        DP_S[i+1] = (1 - P[k-1]) * DP_S[i+1] + P[k-1] * DP_S[i + 2]
+        DP_SNone[i+1] = (1 - P[k-1]) * DP_SNone[i+1] + P[k-1] * DP_SNone[i + 2]
+      }
+    }
+    expectations <- rbind(expectations, c(f1None + 2 * pNone / (1 + k), f1))
+  }
+  
+  return(t(expectations[nrow(expectations):1, ]))
+  
+}
+
+## Return best scenario
+maximize_expectation <- function(P, pNone=NULL){
+  
+  expectations <- get_expectation(P, pNone)
+  opt_coords <- which(expectations == max(expectations), arr.ind = TRUE)
+  
+  max_f1 <- expectations[opt_coords]
+  predNone <- as.logical(opt_coords[1,1] == 1)
+  best_k <- as.integer(opt_coords[1,2])-1
+  
+  return(list(best_k=best_k, predNone=predNone, max_f1=max_f1))
+}
+
+
+
+# ## Validation on test cases
+# P <- c(0.3, 0.2)
+# pNone=NULL
+# print(maximize_expectation(P, pNone))
+# 
+# P <- c(0.3, 0.2)
+# pNone=0.57
+# print(maximize_expectation(P, pNone))
+# 
+# P <- c(0.9, 0.6)
+# pNone=NULL
+# print(maximize_expectation(P, pNone))
+# 
+# P <- c(0.5, 0.4, 0.3, 0.35, 0.33, 0.31, 0.29, 0.27, 0.25, 0.20, 0.15, 0.10)
+# pNone=NULL
+# print(maximize_expectation(P, pNone))
+# 
+P <- c(0.5, 0.4, 0.3, 0.35, 0.33, 0.31, 0.29, 0.27, 0.25, 0.20, 0.15, 0.10)
+pNone=NULL
+print(maximize_expectation(P, pNone))
+
 
 ##### ALL F1 Functions #####
 # F Score Calculation 
@@ -235,6 +428,331 @@ calc_submit_f1_noPred <- function (t) {
   return (calc_f1)
   
 }
+
+# Calcualte submit Average F Store 
+calc_submit_MaxF1 <- function (n_th,test_pred, submission_maxf1, submission_maxf1_size) {
+  
+  #n_th = none_threshold 
+  #t = test
+
+  Add_None_Threshold_1p = 0.50
+  Add_None_Threshold_2p = 0.41
+  Add_None_Threshold_3p = 0.32
+  
+
+  
+  # Try gregexpr to find size, did not use it. 
+  #  length(as.vector(gregexpr(" ", as.character(submission[submission$order_id == 3251761,  "products"]))[[1]]))
+  #  length((gregexpr(" ", (submission[45,  "products"]))[[1]]))
+
+
+  # tmp <-  submission_maxf1_size %>%
+  #   group_by(submit_products_size) %>%
+  #   summarise(prodcnt = n())
+  
+  submission <- submission_maxf1
+  
+  #### Add single product submission with None 
+  t_1_prod <- test_pred %>%
+    inner_join(submission_maxf1_size, by = "order_id" ) %>%
+    filter (submit_products_size == 1) %>%
+    filter (pred_rank == 1) %>%
+    group_by(order_id) %>%
+    filter( pred_reordered_org <= Add_None_Threshold_1p)
+
+  
+  submission_singlewithNone <- submission[submission$order_id %in% t_1_prod$order_id,] %>%
+    group_by(order_id) %>%
+    summarise(
+      products = paste( products, "None", collapse = " ")
+    )
+  
+  submission_new <- submission[! submission$order_id %in% submission_singlewithNone$order_id,] 
+  submission <- submission_new %>% bind_rows(submission_singlewithNone) %>% arrange(order_id)
+  
+  
+  #### Add None to 2 products submit
+  t_2_prod <- test_pred %>%
+    inner_join(submission_maxf1_size, by = "order_id" ) %>%
+    filter (submit_products_size == 2) %>%
+    filter (pred_rank <= 2) %>%
+    group_by(order_id) %>%
+    mutate (pred_mean = mean(pred_reordered_org)) %>%
+    filter(pred_mean <= Add_None_Threshold_2p )
+
+  submission_2p_withNone <- submission[submission$order_id %in% t_2_prod$order_id,] %>%
+    group_by(order_id) %>%
+    summarise(
+      products = paste( products, "None", collapse = " ")
+    )
+
+
+  submission_new <- submission[! submission$order_id %in% submission_2p_withNone$order_id,]
+  submission <- submission_new %>% bind_rows(submission_2p_withNone) %>% arrange(order_id)
+
+
+  # #### Add None to 3 products submit
+  t_3_prod <- test_pred %>%
+    inner_join(submission_maxf1_size, by = "order_id" ) %>%
+    filter (submit_products_size == 3) %>%
+    filter (pred_rank <= 3) %>%
+    group_by(order_id) %>%
+    mutate (pred_mean = mean(pred_reordered_org)) %>%
+    filter(pred_mean <= Add_None_Threshold_3p )
+
+  submission_3p_withNone <- submission[submission$order_id %in% t_3_prod$order_id,] %>%
+    group_by(order_id) %>%
+    summarise(
+      products = paste( products, "None", collapse = " ")
+    )
+
+
+  submission_new <- submission[! submission$order_id %in% submission_3p_withNone$order_id,]
+  submission <- submission_new %>% bind_rows(submission_3p_withNone) %>% arrange(order_id)
+
+  
+  fact <- test_pred %>%
+    filter(reordered == 1) %>%
+    group_by(order_id) %>%
+    summarise(
+      fact_products = paste(product_id, collapse = " ")
+    )
+  
+  fact_missing <- data.frame(
+    order_id = unique(test_pred$order_id[!test_pred$order_id %in% fact$order_id]),
+    fact_products = "None"
+  )
+  fact <- fact %>% bind_rows(fact_missing) %>% arrange(order_id)
+  
+  submission_fact <- fact %>% 
+    inner_join(submission, by = "order_id") 
+  
+  df <- data.frame(order_id = submission_fact$order_id, 
+                   fact = submission_fact$fact_products,
+                   predicted = submission_fact$products)
+  
+  df$f1 <- applyF1Score(df)
+  calc_f1 = mean(df$f1)
+  print(paste(
+    " f1 Score is:", calc_f1, 
+    "n_th: ",n_th,
+    "missing: ",nrow(missing),
+    "sub_fact: ",nrow(submission_fact) ))  
+  return (calc_f1)
+  
+}
+
+
+# #### Debug "None" Process ##############################
+# 
+# 
+# test$pred_reordered_org <- predict(model, X)
+# test$pred_reordered <- NULL
+# test$pred_reordered <- (test$pred_reordered_org > 0.2) * 1
+# 
+# 
+# 
+# test_pred <- test[,c("user_id","order_id","product_id", "pred_reordered", "pred_reordered_org", "reordered")]
+# 
+# t <- test_pred
+# 
+# # tmp <-  t %>%
+# #   group_by(order_id) %>%
+# #   summarise(prodcnt = sum(pred_reordered)) %>%
+# #   group_by (prodcnt  ) %>%
+# #   summarise(usercnt = n())
+# 
+# 
+# ## Fact result
+# fact <- t %>%
+#   filter(reordered == 1) %>%
+#   group_by(order_id) %>%
+#   summarise(
+#     fact_products = paste(product_id, collapse = " ")
+#   )
+# 
+# fact_missing <- data.frame(
+#   order_id = unique(t$order_id[!t$order_id %in% fact$order_id]),
+#   fact_products = "None"
+# )
+# fact <- fact %>% bind_rows(fact_missing) %>% arrange(order_id)
+# 
+# 
+# #### Tune Add_None_Threshold
+# ## Find best threshold, but it doesn't improve on LB. 0.5 is the best for now.
+# # Add_None_Threshold_1p = 0.46
+# # Add_None_Threshold_1p = 0.41
+# # Add_None_Threshold_1p = 0.32
+# 
+# for(i in 24:30)
+# {
+#   Add_None_Threshold = as.numeric(i/100)
+# 
+# 
+#   submission <- t %>%
+#    filter(pred_reordered == 1) %>%
+#    group_by(order_id) %>%
+#    summarise(
+#      products = paste(product_id, collapse = " ")
+#    )
+# 
+#   missing <- data.frame(
+#    order_id = unique(t$order_id[!t$order_id %in% submission$order_id]),
+#    products = "None"
+#   )
+# 
+#   submission <- submission %>% bind_rows(missing) %>% arrange(order_id)
+# 
+#   Add_None_Threshold_1p = 0.5
+#   Add_None_Threshold_2p = 0.41
+#   Add_None_Threshold_3p = 0.32
+#   Add_None_Threshold_4p = Add_None_Threshold
+# 
+#   #### Add None to single product  submit
+#   t_single_prod <- t %>%
+#     group_by(order_id) %>%
+#     mutate(prodcnt = sum(pred_reordered)) %>%
+#     filter(prodcnt == 1 & pred_reordered == 1 & pred_reordered_org <= Add_None_Threshold_1p)
+# 
+# 
+#   submission_singlewithNone <- submission[submission$order_id %in% t_single_prod$order_id,] %>%
+#     group_by(order_id) %>%
+#     summarise(
+#       products = paste( products, "None", collapse = " ")
+#     )
+# 
+#   submission_new <- submission[! submission$order_id %in% submission_singlewithNone$order_id,]
+#   submission <- submission_new %>% bind_rows(submission_singlewithNone) %>% arrange(order_id)
+# 
+#   #### Add None to 2 products submit
+#   t_2_prod <- t %>%
+#     group_by(order_id) %>%
+#     mutate(prodcnt = sum(pred_reordered)) %>%
+#     filter(prodcnt == 2 & pred_reordered == 1 ) %>%
+#     mutate (pred_mean = mean(pred_reordered_org)) %>%
+#     filter(pred_mean <= Add_None_Threshold_2p )
+# 
+#   submission_2p_withNone <- submission[submission$order_id %in% t_2_prod$order_id,] %>%
+#     group_by(order_id) %>%
+#     summarise(
+#       products = paste( products, "None", collapse = " ")
+#     )
+# 
+# 
+#   submission_new <- submission[! submission$order_id %in% submission_2p_withNone$order_id,]
+#   submission <- submission_new %>% bind_rows(submission_2p_withNone) %>% arrange(order_id)
+# 
+# 
+#   #### Add None to 3 products submit
+#   t_3_prod <- t %>%
+#     group_by(order_id) %>%
+#     mutate(prodcnt = sum(pred_reordered)) %>%
+#     filter(prodcnt == 3 & pred_reordered == 1 ) %>%
+#     mutate (pred_mean = mean(pred_reordered_org)) %>%
+#     filter(pred_mean <= Add_None_Threshold_3p )
+# 
+#   submission_3p_withNone <- submission[submission$order_id %in% t_3_prod$order_id,] %>%
+#     group_by(order_id) %>%
+#     summarise(
+#       products = paste( products, "None", collapse = " ")
+#     )
+# 
+# 
+#     submission_new <- submission[! submission$order_id %in% submission_3p_withNone$order_id,]
+#     submission <- submission_new %>% bind_rows(submission_3p_withNone) %>% arrange(order_id)
+# 
+#     
+#     #### Add None to 4 products submit
+#     t_4_prod <- t %>%
+#       group_by(order_id) %>%
+#       mutate(prodcnt = sum(pred_reordered)) %>%
+#       filter(prodcnt %in% c(4,5) & pred_reordered == 1 ) %>%
+#       mutate (pred_mean = mean(pred_reordered_org)) %>%
+#       filter(pred_mean <= Add_None_Threshold_4p )
+#     
+#     submission_4p_withNone <- submission[submission$order_id %in% t_4_prod$order_id,] %>%
+#       group_by(order_id) %>%
+#       summarise(
+#         products = paste( products, "None", collapse = " ")
+#       )
+#     
+#     
+#     submission_new <- submission[! submission$order_id %in% submission_4p_withNone$order_id,]
+#     submission <- submission_new %>% bind_rows(submission_4p_withNone) %>% arrange(order_id)
+#     
+#   #### Set to none on single predictor when org prediction is between 0.2 and 0.3
+#   #submission[submission$order_id %in% t_single_prod[t_single_prod$pred_reordered_org <= 0.25, ]$order_id,]$products = "None"
+# 
+# 
+#   ## Calculate F1 Score
+#   submission_fact <- fact %>%
+#     inner_join(submission, by = "order_id")
+# 
+#   df <- data.frame(order_id = submission_fact$order_id,
+#                    fact = submission_fact$fact_products,
+#                    predicted = submission_fact$products)
+# 
+#   df$f1 <- applyF1Score(df)
+#   calc_f1 = mean(df$f1)
+# 
+#   print(paste(
+#     " f1 Score is:", calc_f1,
+#     "Add_None_Threshold_1p: ",Add_None_Threshold_1p,
+#     "None_2p: ",Add_None_Threshold_2p,
+#     "None_3p: ",Add_None_Threshold_3p,
+#     "None_4p: ",Add_None_Threshold_4p,
+#     "missing: ",nrow(missing),
+#     "sub_fact: ",nrow(submission_fact) ))
+# }
+# 
+# 
+# rm(df, fact, fact_missing, submission, missing,
+#   submission_singlewithNone, submission_fact, submission_new,
+#   t, t_single_prod, test_single_prod, test_pred)
+
+
+
+
+
+######################## Debug Number of Items on single order ##############################
+# No HELP ON Mean Busket Size
+# 
+# pred_submit_threshold = 0.17
+# 
+# # Get busket Size
+# users_basket <- orders_prod_prior %>%
+#   group_by(user_id, order_id) %>%
+#   summarise(
+#     user_order_basket = n()
+#   ) %>%
+#   group_by(user_id) %>%
+#   summarise(
+#     u_basket_mean = mean(user_order_basket)
+#   )
+# 
+# test$pred_reordered_org <- predict(model, X)
+# test$pred_reordered <- NULL
+# test$pred_reordered <- (test$pred_reordered_org > pred_submit_threshold) * 1
+# 
+# 
+# 
+# test_pred <- test[,c("user_id","order_id","product_id", "pred_reordered", "pred_reordered_org", "reordered")]
+# 
+# t <- test_pred %>%
+#   filter(pred_reordered == 1) %>%
+#   inner_join(users_basket, by = "user_id") %>%
+#   arrange(user_id,  desc(pred_reordered_org)) %>%
+#   group_by(order_id) %>%
+#   mutate(pred_rank = row_number())  %>%
+#   filter(pred_rank <= (u_basket_mean + 1 ))
+
+
+###################################################################33
+# opp_10 <- orders_prod_prior[orders_prod_prior$user_id==10,]
+# o_10 <- orders[orders$user_id==10,]
+# opt_10 <- orders_prod_test[orders_prod_test$user_id==10,]
+# data_10 <- data[data$user_id <= 10, ]
+
 
 
 
@@ -681,9 +1199,8 @@ user_dept_ratio <- orders_prod_prior %>%
 #   select(aisle,i_reorder_ratio_in_all )
 
 
-############# !!! Place to load data environment #################
 
-load("C:/DEV/GitHub/PZ1311_MB/XGB_Ph2_UP&P90D&P&ProdStreak_20170731.RData")
+#load("C:/DEV/GitHub/PZ1311_MB/XGB_Ph2_UP&P90D&P&ProdStreak_20170731.RData")
 
 #dataorg<- data
 
@@ -746,7 +1263,8 @@ rm(products, prod_features)
 rm(dataorg)
 gc()
 
-
+############# !!! Place to load data environment #################
+load("C:/DEV/GitHub/PZ1311_MB/XGB_Ph2_UP&P90D&P&ProdStreak&da&dow_20170802.RData")
 
 #### Setup datanew with new variables --------------------------------
 
@@ -876,6 +1394,47 @@ xgb.ggplot.importance(importance)
 test[] <- lapply(test, as.numeric)
 X <- xgb.DMatrix(as.matrix(test %>% select( -user_id, -order_id, -product_id, -reordered)))
 
+best_f1 = 0
+best_none_threshold = 0
+
+
+test$pred_reordered_org <- predict(model, X)
+t_pred <- test[,c("order_id", "product_id", "pred_reordered_org" , "reordered")]
+
+# Add pred_rank by probability
+t_pred <- test_pred %>%
+  arrange(order_id,  desc(pred_reordered_org)) %>%
+  group_by(order_id) %>%
+  mutate(pred_rank = row_number()) 
+
+submaxf1 <- test_pred %>%
+  group_by(order_id) %>%
+  summarise(products = exact_F1_max_none(pred_reordered_org, product_id))
+
+
+sub_maxf1_size <- test_pred %>%
+  group_by(order_id) %>%
+  summarise(submit_products_size = exact_F1_max_none_size(pred_reordered_org, product_id))
+
+# #####Tune the best None threshold on 1P/2P/3P ######
+# # p1 0.53, p2 0.39, P3 0.34
+# 
+# for(i in 1:1)
+# {
+#   #i=30
+#   none_threshold = as.numeric(i/100)
+#   f1 =calc_submit_MaxF1(none_threshold, t_pred,submaxf1,sub_maxf1_size)
+# 
+#   if (best_f1 < f1) {
+#     best_f1 = f1
+#     best_none_threshold = none_threshold
+#   }
+# }
+# 
+# print(paste("best_none_threshold:", best_none_threshold, "best_f1 is:", best_f1 ))
+
+t= test_pred
+sumission = submaxf1
 
 #Get result by fixed threshold 
 #pred_threshold = 0.20
@@ -885,24 +1444,69 @@ X <- xgb.DMatrix(as.matrix(test %>% select( -user_id, -order_id, -product_id, -r
 
 
 
-##### Find Best Threshold on F1 Score ###############
-best_f1 = 0
-best_threshold = 0
+# ##### Find Best Fixed Threshold on F1 Score ###############
+# best_f1 = 0
+# best_threshold = 0
+# 
+# for(i in 19:21)
+# {
+#   acc_threshold = as.numeric(i/100)
+#   f1 =calc_submit_f1(acc_threshold, test, model, X)
+# 
+#   if (best_f1 < f1) {
+#     best_f1 = f1
+#     best_threshold = acc_threshold
+#   }
+# }
+# print(paste("best_threshold:", best_threshold, "best_f1 is:", best_f1 ))
 
-for(i in 19:21)
-{
-  acc_threshold = as.numeric(i/100)
-  f1 =calc_submit_f1(acc_threshold, test, model, X)
-
-  if (best_f1 < f1) {
-    best_f1 = f1
-    best_threshold = acc_threshold
-  }
-}
-print(paste("best_threshold:", best_threshold, "best_f1 is:", best_f1 ))
 
 
 
+#### Add single produdct submission with None 
+t_single_prod <- t %>%
+  group_by(order_id) %>%
+  mutate(prodcnt = sum(pred_reordered)) %>%
+  filter(prodcnt == 1 & pred_reordered == 1 & pred_reordered_org <= Best_Add_None_Threshold)
+
+submission_singlewithNone <- submission[submission$order_id %in% t_single_prod$order_id,] %>%
+  group_by(order_id) %>%
+  summarise(
+    products = paste( products, "None", collapse = " ")
+  )
+
+submission_new <- submission[! submission$order_id %in% submission_singlewithNone$order_id,] 
+submission <- submission_new %>% bind_rows(submission_singlewithNone) %>% arrange(order_id)
+
+
+fact <- t %>%
+  filter(reordered == 1) %>%
+  group_by(order_id) %>%
+  summarise(
+    fact_products = paste(product_id, collapse = " ")
+  )
+
+fact_missing <- data.frame(
+  order_id = unique(t$order_id[!t$order_id %in% fact$order_id]),
+  fact_products = "None"
+)
+fact <- fact %>% bind_rows(fact_missing) %>% arrange(order_id)
+
+submission_fact <- fact %>% 
+  inner_join(submission, by = "order_id") 
+
+df <- data.frame(order_id = submission_fact$order_id, 
+                 fact = submission_fact$fact_products,
+                 predicted = submission_fact$products)
+
+df$f1 <- applyF1Score(df)
+calc_f1 = mean(df$f1)
+print(paste(
+  " f1 Score is:", calc_f1, 
+  "fact: ",nrow(fact),
+  "missing: ",nrow(missing),
+  "sub_fact: ",nrow(submission_fact) ))  
+return (calc_f1)
 
 
 
@@ -971,38 +1575,92 @@ X <- xgb.DMatrix(as.matrix(test %>% select(-user_id, -order_id, -product_id)))
 
 
 
-acc_threshold <- 0.20
-test$pred_reordered_org <- predict(model, X)
 
-test$pred_reordered <- (test$pred_reordered_org > acc_threshold) * 1
-
-submission <- test %>%
-  filter(pred_reordered == 1) %>%
-  group_by(order_id) %>%
-  summarise(
-    products = paste(product_id, collapse = " ")
-  )
-
-missing <- data.frame(
-  order_id = unique(test$order_id[!test$order_id %in% submission$order_id]),
-  products = "None"
-)
-
-submission <- submission %>% bind_rows(missing) %>% arrange(order_id)
+######### Apply Fix threshold of 0.20 ##############################
+# acc_threshold <- 0.20
+# test$pred_reordered_org <- predict(model, X)
 # 
-# #### Add None to single produdct submission 
+# test$pred_reordered <- (test$pred_reordered_org > acc_threshold) * 1
+# 
+# submission <- test %>%
+#   filter(pred_reordered == 1) %>%
+#   group_by(order_id) %>%
+#   summarise(
+#     products = paste(product_id, collapse = " ")
+#   )
+# 
+# missing <- data.frame(
+#   order_id = unique(test$order_id[!test$order_id %in% submission$order_id]),
+#   products = "None"
+# )
+# 
+# submission <- submission %>% bind_rows(missing) %>% arrange(order_id)
+
+
+
+
+# #### Try 2nd MaxF1 function, Size are 100% match to V1   ############## 
+# submission_maxf1_size_v1 <- submission_maxf1_size
+# submission_maxf1_size_v2 <- submission_maxf1_size
+# submission_maxf1_size_v2$submit_products_size <- 0
+# 
+# orderlist <- unique(test_pred$order_id)
+# 
+# for(ol in 1:length(orderlist)) {
+#   P <- test_pred[test_pred$order_id == orderlist[ol],]$pred_reordered_org
+#   if(length(P) > 1 ) {
+#     submission_maxf1_size_v2[submission_maxf1_size_v2$order_id == orderlist[ol],]$submit_products_size <- maximize_expectation(P, NULL)$best_k
+#   } 
+#   else
+#   {
+#     if(test_pred[test_pred$order_id == orderlist[ol],]$pred_reordered_org >= 0.2 )
+#       submission_maxf1_size_v2[submission_maxf1_size_v2$order_id == orderlist[ol],]$submit_products_size = 1
+#   }
+# }
+# 
+# submission_maxf1_size_v1[submission_maxf1_size_v1$submit_products_size != submission_maxf1_size_v2$submit_products_size,]
+# 
+
+
+# ######### Apply None to 1/2/3 product submitssion ##############################
+# 
+# # Add pred_rank by probability
+# test_pred <- test_pred %>%
+#   arrange(order_id,  desc(pred_reordered_org)) %>%
+#   group_by(order_id) %>%
+#   mutate(pred_rank = row_number()) 
+# 
+# submission_maxf1 <- test_pred %>%
+#   group_by(order_id) %>%
+#   summarise(products = exact_F1_max_none(pred_reordered_org, product_id))
+# 
+# 
 # 
 # Add_None_Threshold_1p = 0.5
 # Add_None_Threshold_2p = 0.41
 # Add_None_Threshold_3p = 0.32
 # 
+# submission <- submission_maxf1
 # 
-# test_single_prod <- test %>%
+# # Try gregexpr to find size, did not use it. 
+# #  length(as.vector(gregexpr(" ", as.character(submission[submission$order_id == 3251761,  "products"]))[[1]]))
+# #  length((gregexpr(" ", (submission[45,  "products"]))[[1]]))
+# 
+# submission_maxf1_size <- test_pred %>%
 #   group_by(order_id) %>%
-#   mutate(prodcnt = sum(pred_reordered)) %>%
-#   filter(prodcnt == 1 & pred_reordered == 1 & pred_reordered_org <= Add_None_Threshold_1p)
+#   summarise(submit_products_size = exact_F1_max_none_size(pred_reordered_org, product_id))
 # 
-# submission_singlewithNone <- submission[submission$order_id %in% test_single_prod$order_id,] %>%
+# 
+# #### Add single product submission with None 
+# t_1_prod <- test_pred %>%
+#   inner_join(submission_maxf1_size, by = "order_id" ) %>%
+#   filter (submit_products_size == 1) %>%
+#   filter (pred_rank == 1) %>%
+#   group_by(order_id) %>%
+#   filter( pred_reordered_org <= Add_None_Threshold_1p)
+# 
+# 
+# submission_singlewithNone <- submission[submission$order_id %in% t_1_prod$order_id,] %>%
 #   group_by(order_id) %>%
 #   summarise(
 #     products = paste( products, "None", collapse = " ")
@@ -1011,11 +1669,13 @@ submission <- submission %>% bind_rows(missing) %>% arrange(order_id)
 # submission_new <- submission[! submission$order_id %in% submission_singlewithNone$order_id,] 
 # submission <- submission_new %>% bind_rows(submission_singlewithNone) %>% arrange(order_id)
 # 
-# #### Add None to 2 products submit 
-# t_2_prod <- test %>%
-#   group_by(order_id) %>%
-#   mutate(prodcnt = sum(pred_reordered)) %>%
-#   filter(prodcnt == 2 & pred_reordered == 1 ) %>%
+# 
+# #### Add None to 2 products submit
+# t_2_prod <- test_pred %>%
+#   inner_join(submission_maxf1_size, by = "order_id" ) %>%
+#   filter (submit_products_size == 2) %>%
+#   filter (pred_rank <= 2) %>%
+#   group_by(order_id) %>%    
 #   mutate (pred_mean = mean(pred_reordered_org)) %>%
 #   filter(pred_mean <= Add_None_Threshold_2p )
 # 
@@ -1025,247 +1685,152 @@ submission <- submission %>% bind_rows(missing) %>% arrange(order_id)
 #     products = paste( products, "None", collapse = " ")
 #   )
 # 
-# submission_new <- submission[! submission$order_id %in% submission_2p_withNone$order_id,] 
+# 
+# submission_new <- submission[! submission$order_id %in% submission_2p_withNone$order_id,]
 # submission <- submission_new %>% bind_rows(submission_2p_withNone) %>% arrange(order_id)
-# 
-# 
-# #### Add None to 3 products submit 
-# t_3_prod <- test %>%
-#   group_by(order_id) %>%
-#   mutate(prodcnt = sum(pred_reordered)) %>%
-#   filter(prodcnt == 3 & pred_reordered == 1 ) %>%
+# # 
+# # 
+# # #### Add None to 3 products submit 
+# t_3_prod <- test_pred %>%
+#   inner_join(submission_maxf1_size, by = "order_id" ) %>%
+#   filter (submit_products_size == 3) %>%
+#   filter (pred_rank <= 3) %>%
+#   group_by(order_id) %>%    
 #   mutate (pred_mean = mean(pred_reordered_org)) %>%
 #   filter(pred_mean <= Add_None_Threshold_3p )
+# 
 # submission_3p_withNone <- submission[submission$order_id %in% t_3_prod$order_id,] %>%
 #   group_by(order_id) %>%
 #   summarise(
 #     products = paste( products, "None", collapse = " ")
 #   )
-# submission_new <- submission[! submission$order_id %in% submission_3p_withNone$order_id,] 
+# 
+# 
+# submission_new <- submission[! submission$order_id %in% submission_3p_withNone$order_id,]
 # submission <- submission_new %>% bind_rows(submission_3p_withNone) %>% arrange(order_id)
-
-
-## When prediction is less than 0.25, submit to None Only, no help
-# submission[submission$order_id %in% test_single_prod[test_single_prod$pred_reordered_org <= 0.25, ]$order_id,]$products = "None"
-
-write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_fbqh_try17_th20_NoNone.csv", row.names = F)
-
-
-
-
+# 
+# 
+# ## When prediction is less than 0.25, submit to None Only, no help
+# # submission[submission$order_id %in% test_single_prod[test_single_prod$pred_reordered_org <= 0.25, ]$order_id,]$products = "None"
+# 
+# write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_fbqh_try18_maxf_3pnone_th504132.csv", row.names = F)
+# 
 
 
 
 
-# #### Debug "None" Process ##############################
-# 
-# 
-# test$pred_reordered_org <- predict(model, X)
-# test$pred_reordered <- NULL
-# test$pred_reordered <- (test$pred_reordered_org > 0.2) * 1
-# 
-# 
-# 
-# test_pred <- test[,c("user_id","order_id","product_id", "pred_reordered", "pred_reordered_org", "reordered")]
-# 
-# t <- test_pred
-# 
-# # tmp <-  t %>%
-# #   group_by(order_id) %>%
-# #   summarise(prodcnt = sum(pred_reordered)) %>%
-# #   group_by (prodcnt  ) %>%
-# #   summarise(usercnt = n())
-# 
-# 
-# ## Fact result
-# fact <- t %>%
-#   filter(reordered == 1) %>%
-#   group_by(order_id) %>%
-#   summarise(
-#     fact_products = paste(product_id, collapse = " ")
-#   )
-# 
-# fact_missing <- data.frame(
-#   order_id = unique(t$order_id[!t$order_id %in% fact$order_id]),
-#   fact_products = "None"
-# )
-# fact <- fact %>% bind_rows(fact_missing) %>% arrange(order_id)
-# 
-# 
-# #### Tune Add_None_Threshold
-# ## Find best threshold, but it doesn't improve on LB. 0.5 is the best for now.
-# # Add_None_Threshold_1p = 0.46
-# # Add_None_Threshold_1p = 0.41
-# # Add_None_Threshold_1p = 0.32
-# 
-# for(i in 24:30)
-# {
-#   Add_None_Threshold = as.numeric(i/100)
-# 
-# 
-#   submission <- t %>%
-#    filter(pred_reordered == 1) %>%
-#    group_by(order_id) %>%
-#    summarise(
-#      products = paste(product_id, collapse = " ")
-#    )
-# 
-#   missing <- data.frame(
-#    order_id = unique(t$order_id[!t$order_id %in% submission$order_id]),
-#    products = "None"
-#   )
-# 
-#   submission <- submission %>% bind_rows(missing) %>% arrange(order_id)
-# 
-#   Add_None_Threshold_1p = 0.5
-#   Add_None_Threshold_2p = 0.41
-#   Add_None_Threshold_3p = 0.32
-#   Add_None_Threshold_4p = Add_None_Threshold
-# 
-#   #### Add None to single product  submit
-#   t_single_prod <- t %>%
-#     group_by(order_id) %>%
-#     mutate(prodcnt = sum(pred_reordered)) %>%
-#     filter(prodcnt == 1 & pred_reordered == 1 & pred_reordered_org <= Add_None_Threshold_1p)
-# 
-# 
-#   submission_singlewithNone <- submission[submission$order_id %in% t_single_prod$order_id,] %>%
-#     group_by(order_id) %>%
-#     summarise(
-#       products = paste( products, "None", collapse = " ")
-#     )
-# 
-#   submission_new <- submission[! submission$order_id %in% submission_singlewithNone$order_id,]
-#   submission <- submission_new %>% bind_rows(submission_singlewithNone) %>% arrange(order_id)
-# 
-#   #### Add None to 2 products submit
-#   t_2_prod <- t %>%
-#     group_by(order_id) %>%
-#     mutate(prodcnt = sum(pred_reordered)) %>%
-#     filter(prodcnt == 2 & pred_reordered == 1 ) %>%
-#     mutate (pred_mean = mean(pred_reordered_org)) %>%
-#     filter(pred_mean <= Add_None_Threshold_2p )
-# 
-#   submission_2p_withNone <- submission[submission$order_id %in% t_2_prod$order_id,] %>%
-#     group_by(order_id) %>%
-#     summarise(
-#       products = paste( products, "None", collapse = " ")
-#     )
-# 
-# 
-#   submission_new <- submission[! submission$order_id %in% submission_2p_withNone$order_id,]
-#   submission <- submission_new %>% bind_rows(submission_2p_withNone) %>% arrange(order_id)
-# 
-# 
-#   #### Add None to 3 products submit
-#   t_3_prod <- t %>%
-#     group_by(order_id) %>%
-#     mutate(prodcnt = sum(pred_reordered)) %>%
-#     filter(prodcnt == 3 & pred_reordered == 1 ) %>%
-#     mutate (pred_mean = mean(pred_reordered_org)) %>%
-#     filter(pred_mean <= Add_None_Threshold_3p )
-# 
-#   submission_3p_withNone <- submission[submission$order_id %in% t_3_prod$order_id,] %>%
-#     group_by(order_id) %>%
-#     summarise(
-#       products = paste( products, "None", collapse = " ")
-#     )
-# 
-# 
-#     submission_new <- submission[! submission$order_id %in% submission_3p_withNone$order_id,]
-#     submission <- submission_new %>% bind_rows(submission_3p_withNone) %>% arrange(order_id)
-# 
-#     
-#     #### Add None to 4 products submit
-#     t_4_prod <- t %>%
-#       group_by(order_id) %>%
-#       mutate(prodcnt = sum(pred_reordered)) %>%
-#       filter(prodcnt %in% c(4,5) & pred_reordered == 1 ) %>%
-#       mutate (pred_mean = mean(pred_reordered_org)) %>%
-#       filter(pred_mean <= Add_None_Threshold_4p )
-#     
-#     submission_4p_withNone <- submission[submission$order_id %in% t_4_prod$order_id,] %>%
-#       group_by(order_id) %>%
-#       summarise(
-#         products = paste( products, "None", collapse = " ")
-#       )
-#     
-#     
-#     submission_new <- submission[! submission$order_id %in% submission_4p_withNone$order_id,]
-#     submission <- submission_new %>% bind_rows(submission_4p_withNone) %>% arrange(order_id)
-#     
-#   #### Set to none on single predictor when org prediction is between 0.2 and 0.3
-#   #submission[submission$order_id %in% t_single_prod[t_single_prod$pred_reordered_org <= 0.25, ]$order_id,]$products = "None"
-# 
-# 
-#   ## Calculate F1 Score
-#   submission_fact <- fact %>%
-#     inner_join(submission, by = "order_id")
-# 
-#   df <- data.frame(order_id = submission_fact$order_id,
-#                    fact = submission_fact$fact_products,
-#                    predicted = submission_fact$products)
-# 
-#   df$f1 <- applyF1Score(df)
-#   calc_f1 = mean(df$f1)
-# 
-#   print(paste(
-#     " f1 Score is:", calc_f1,
-#     "Add_None_Threshold_1p: ",Add_None_Threshold_1p,
-#     "None_2p: ",Add_None_Threshold_2p,
-#     "None_3p: ",Add_None_Threshold_3p,
-#     "None_4p: ",Add_None_Threshold_4p,
-#     "missing: ",nrow(missing),
-#     "sub_fact: ",nrow(submission_fact) ))
-# }
-# 
-# 
-# rm(df, fact, fact_missing, submission, missing,
-#   submission_singlewithNone, submission_fact, submission_new,
-#   t, t_single_prod, test_single_prod, test_pred)
+######### Original way to Apply None to 1/2/3 product submitssion ##############################
+#### Somehow it can produce better result
+#### Best on Aug 3rd, 0.3948396
+
+
+test$pred_reordered_org <- predict(model, X)
+test_pred <- test[,c("order_id", "product_id", "pred_reordered_org" , "reordered")]
+
+pred_submit_threshold = 0.20
+test_pred$pred_reordered <- (test_pred$pred_reordered_org > pred_submit_threshold) * 1
+
+# Add pred_rank by probability
+test_pred <- test_pred %>%
+  arrange(order_id,  desc(pred_reordered_org)) %>%
+  group_by(order_id) %>%
+  mutate(pred_rank = row_number()) 
+
+submaxf1 <- test_pred %>%
+  group_by(order_id) %>%
+  summarise(products = exact_F1_max_none(pred_reordered_org, product_id))
+
+
+sub_maxf1_size <- test_pred %>%
+  group_by(order_id) %>%
+  summarise(submit_products_size = exact_F1_max_none_size(pred_reordered_org, product_id))
+
+submission = submaxf1
+
+
+### Add None to single produdct submission 
+
+Add_None_Threshold_1p = 0.5
+Add_None_Threshold_2p = 0.41
+Add_None_Threshold_3p = 0.32
+
+
+test_single_prod <- test_pred %>%
+  group_by(order_id) %>%
+  mutate(prodcnt = sum(pred_reordered)) %>%
+  filter(prodcnt == 1 & pred_reordered == 1 & pred_reordered_org <= Add_None_Threshold_1p)
+
+submission_singlewithNone <- submission[submission$order_id %in% test_single_prod$order_id,] %>%
+  group_by(order_id) %>%
+  summarise(
+    products = paste( products, "None", collapse = " ")
+  )
+
+submission_new <- submission[! submission$order_id %in% submission_singlewithNone$order_id,] 
+submission <- submission_new %>% bind_rows(submission_singlewithNone) %>% arrange(order_id)
+
+#### Add None to 2 products submit 
+t_2_prod <- test_pred %>%
+  group_by(order_id) %>%
+  mutate(prodcnt = sum(pred_reordered)) %>%
+  filter(prodcnt == 2 & pred_reordered == 1 ) %>%
+  mutate (pred_mean = mean(pred_reordered_org)) %>%
+  mutate (pred_max = max(pred_reordered_org)) %>%
+  filter(pred_mean <= Add_None_Threshold_2p )
+
+submission_2p_withNone <- submission[submission$order_id %in% t_2_prod$order_id,] %>%
+  group_by(order_id) %>%
+  summarise(
+    products = paste( products, "None", collapse = " ")
+  )
+
+submission_new <- submission[! submission$order_id %in% submission_2p_withNone$order_id,] 
+submission <- submission_new %>% bind_rows(submission_2p_withNone) %>% arrange(order_id)
+
+
+#### Add None to 3 products submit 
+t_3_prod <- test_pred %>%
+  group_by(order_id) %>%
+  mutate(prodcnt = sum(pred_reordered)) %>%
+  filter(prodcnt == 3 & pred_reordered == 1 ) %>%
+  mutate (pred_mean = mean(pred_reordered_org)) %>%
+  mutate (pred_max = max(pred_reordered_org)) %>%
+  filter(pred_mean <= Add_None_Threshold_3p  )
+
+submission_3p_withNone <- submission[submission$order_id %in% t_3_prod$order_id,] %>%
+  group_by(order_id) %>%
+  summarise(
+    products = paste( products, "None", collapse = " ")
+  )
+
+
+submission_new <- submission[! submission$order_id %in% submission_3p_withNone$order_id,] 
+submission <- submission_new %>% bind_rows(submission_3p_withNone) %>% arrange(order_id)
 
 
 
+#### Add None to 4 products submit 
+t_4_prod <- test_pred %>%
+  group_by(order_id) %>%
+  mutate(prodcnt = sum(pred_reordered)) %>%
+  filter(prodcnt == 4 & pred_reordered == 1 ) %>%
+  mutate (pred_mean = mean(pred_reordered_org)) %>%
+  mutate (pred_max = max(pred_reordered_org)) %>%
+  filter(pred_mean <= 0.25 & pred_max < 0.5 )
+
+submission_4p_withNone <- submission[submission$order_id %in% t_4_prod$order_id,] %>%
+  group_by(order_id) %>%
+  summarise(
+    products = paste( products, "None", collapse = " ")
+  )
 
 
-######################## Debug Number of Items on single order ##############################
-# No HELP ON Mean Busket Size
-# 
-# pred_submit_threshold = 0.17
-# 
-# # Get busket Size
-# users_basket <- orders_prod_prior %>%
-#   group_by(user_id, order_id) %>%
-#   summarise(
-#     user_order_basket = n()
-#   ) %>%
-#   group_by(user_id) %>%
-#   summarise(
-#     u_basket_mean = mean(user_order_basket)
-#   )
-# 
-# test$pred_reordered_org <- predict(model, X)
-# test$pred_reordered <- NULL
-# test$pred_reordered <- (test$pred_reordered_org > pred_submit_threshold) * 1
-# 
-# 
-# 
-# test_pred <- test[,c("user_id","order_id","product_id", "pred_reordered", "pred_reordered_org", "reordered")]
-# 
-# t <- test_pred %>%
-#   filter(pred_reordered == 1) %>%
-#   inner_join(users_basket, by = "user_id") %>%
-#   arrange(user_id,  desc(pred_reordered_org)) %>%
-#   group_by(order_id) %>%
-#   mutate(pred_rank = row_number())  %>%
-#   filter(pred_rank <= (u_basket_mean + 1 ))
+submission_new <- submission[! submission$order_id %in% submission_4p_withNone$order_id,] 
+submission <- submission_new %>% bind_rows(submission_4p_withNone) %>% arrange(order_id)
 
 
-###################################################################33
-# opp_10 <- orders_prod_prior[orders_prod_prior$user_id==10,]
-o_10 <- orders[orders$user_id==10,]
-# opt_10 <- orders_prod_test[orders_prod_test$user_id==10,]
-# data_10 <- data[data$user_id <= 10, ]
+write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_fbqh_try21_maxf_3pnone_PZOrig_None_4P.csv", row.names = F)
+
 
 
 
