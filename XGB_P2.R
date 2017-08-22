@@ -27,7 +27,7 @@ library(Rcpp)
 Sys.setenv("PKG_CXXFLAGS"="-std=c++11")
 
 
-
+##### CPP Function ###################################### 
 # Input: p: item reorder probabilities (sorted), p_none: none probability (0 if not specified)
 # Output: matrix[2][n + 1] out: out[0][j] - F1 score with top j products and None
 #                               out[1][j] - F1 score with top j products
@@ -849,37 +849,99 @@ data <- data %>%
 rm(aisle_orders, dept_orders, aisle_ratio, dept_ratio, user_dept_ratio, user_aisle_ratio)
 gc()
 
-#### Add DOW same days ratio to prior. #################################
-dow_features <- orders_prod_prior %>%
-  inner_join( orders %>%
-               filter(eval_set != "prior") %>%
-               select ( user_id, order_dow ), by = c("user_id","order_dow")) %>%
-  group_by(user_id, product_id) %>%
-  summarise( up_dow_reorder_cnt = sum(reordered)) %>%
-  inner_join( data %>%
-              select ( user_id, product_id, up_reorder_cnt ), by = c("user_id","product_id")) %>%
-  mutate( up_dow_sameday_ratio_toprior = up_dow_reorder_cnt / up_reorder_cnt)
+#### Add DOW same days ratio to prior, at UP level, compare to U ##########################
 
-data <- data %>%
-  left_join(dow_features %>% select(user_id, product_id, up_dow_sameday_ratio_toprior), by = c("user_id","product_id"))
+#opp_10 <- orders_prod_prior[orders_prod_prior$user_id<=10,]
+# o_10 <- orders[orders$user_id==10,]
+# opt_10 <- orders_prod_test[orders_prod_test$user_id==10,]
+# data_10 <- data[data$user_id <= 10, ]
 
-p_dow_features <- orders_prod_prior %>%
-  inner_join( orders %>%
-               filter(eval_set != "prior") %>%
-               select ( user_id, order_dow ), by = c("user_id","order_dow")) %>%
-  group_by(product_id) %>%
+u_p_dow  <- data %>%
+  select ( user_id,product_id) %>%
+  inner_join ( orders %>%
+    filter(eval_set != "prior") %>%
+    select ( user_id, order_dow ), by = c("user_id"))
+
+P_dow_cnt <- orders_prod_prior %>%
+  group_by(product_id, order_dow) %>%
   summarise( p_dow_reorder_cnt = sum(reordered)) %>%
-  inner_join( orders_prod_prior %>%
-                group_by(product_id) %>%
-                summarise( p_reorder_cnt = sum(reordered)), by = "product_id") %>%
-  mutate( p_dow_sameday_ratio_toprior = p_dow_reorder_cnt / p_reorder_cnt)
+  group_by(product_id) %>%
+  mutate(p_reorder_cnt = sum(p_dow_reorder_cnt)) %>%
+  mutate(p_dow_reorder_rate = p_dow_reorder_cnt /p_reorder_cnt ) %>%
+  inner_join (u_p_dow, by = c("product_id","order_dow"))
+
+P_reorder_cnt <- orders_prod_prior %>%
+  group_by(product_id) %>%
+  summarise( p_reorder_cnt = sum(reordered),
+            p_order_cn = n()) %>%
+  mutate(p_reorder_rate = p_reorder_cnt / p_order_cn ) %>%
+  select(product_id, p_reorder_rate)
+
+
 
 data <- data %>%
-  left_join(p_dow_features %>% select( product_id, p_dow_sameday_ratio_toprior), by = "product_id")
+  inner_join( P_reorder_cnt , by = c("product_id") ) %>%
+  left_join( P_dow_cnt , by = c("user_id", "product_id") )
+
+rm(P_dow_cnt, u_p_dow, P_reorder_cnt)
+gc()  
+
+#### Hour of the data 
+u_hod_cnt  <- data %>%
+  select ( user_id,product_id) %>%
+  inner_join ( orders %>%
+                 filter(eval_set != "prior") %>%
+                 select ( user_id, order_hour_of_day ), by = c("user_id"))
 
 
-rm(dow_features, p_dow_features)
-gc()
+P_hod_cnt <- orders_prod_prior %>%
+  group_by(product_id, order_hour_of_day) %>%
+  summarise( p_hod_reorder_cnt = sum(reordered)) %>%
+  group_by(product_id) %>%
+  mutate(p_reorder_cnt = sum(p_hod_reorder_cnt)) %>%
+  mutate(p_hod_reorder_rate = p_hod_reorder_cnt /p_reorder_cnt ) %>% 
+  inner_join (u_hod_cnt, by = c("product_id","order_hour_of_day"))
+
+P_hod_cnt$p_reorder_cnt <- NULL
+
+data <- data %>%
+left_join( P_hod_cnt , by = c("user_id", "product_id") )
+
+rm(u_hod_cnt, u_p_dow, P_reorder_cnt)
+gc()  
+
+
+
+# dow_features <- orders_prod_prior %>%
+#   inner_join( orders %>%
+#                filter(eval_set != "prior") %>%
+#                select ( user_id, order_dow ), by = c("user_id","order_dow")) %>%
+#   group_by(user_id, product_id) %>%
+#   summarise( up_dow_reorder_cnt = sum(reordered)) %>%
+#   inner_join( data %>%
+#               select ( user_id, product_id, up_reorder_cnt ), by = c("user_id","product_id")) %>%
+#   mutate( up_dow_sameday_ratio_toprior = up_dow_reorder_cnt / up_reorder_cnt)
+# 
+# data <- data %>%
+#   left_join(dow_features %>% select(user_id, product_id, up_dow_sameday_ratio_toprior), by = c("user_id","product_id"))
+# 
+# p_dow_features <- orders_prod_prior %>%
+#   inner_join( orders %>%
+#                filter(eval_set != "prior") %>%
+#                select ( user_id, order_dow ), by = c("user_id","order_dow")) %>%
+#   group_by(product_id) %>%
+#   summarise( p_dow_reorder_cnt = sum(reordered)) %>%
+#   inner_join( orders_prod_prior %>%
+#                 group_by(product_id) %>%
+#                 summarise( p_reorder_cnt = sum(reordered)), by = "product_id") %>%
+#   mutate( p_dow_sameday_ratio_toprior = p_dow_reorder_cnt / p_reorder_cnt)
+# 
+# data <- data %>%
+#   left_join(p_dow_features %>% select( product_id, p_dow_sameday_ratio_toprior), by = "product_id")
+# 
+# 
+# rm(dow_features, p_dow_features)
+# gc()
 
 
 # Clean memory, Remove Tables ----------------------------------
@@ -911,8 +973,15 @@ datanew <- data.table(
   up_daycount_ratio= data$up_daycount_ratio,
   up_days_lag1_diff_mean= data$up_days_lag1_diff_mean,
   up_reorder_cnt= data$up_reorder_cnt,
-
   
+
+#  p_reorder_cnt = data$p_reorder_cnt,
+#  p_reorder_rate = data$p_reorder_rate,
+#  p_dow_reorder_cnt = data$p_dow_reorder_cnt, 
+#  p_dow_reorder_rate = data$ p_dow_reorder_rate, 
+
+  p_hod_reorder_rate = data$p_hod_reorder_rate,
+
   # apply 5 p90d features
   p90d_up_orders = data$p90d_up_orders,
   p90d_user_orders = data$p90d_user_orders,
@@ -930,7 +999,6 @@ datanew <- data.table(
 
   order_streak = data$order_streak,
 
-  
   ud_reorder_ratio_in_u = data$ud_reorder_ratio_in_u,  
   ui_reorder_ratio_in_u = data$ui_reorder_ratio_in_u,  
 
@@ -1004,104 +1072,35 @@ xgb.ggplot.importance(importance)
 test[] <- lapply(test, as.numeric)
 X <- xgb.DMatrix(as.matrix(test %>% select( -user_id, -order_id, -product_id, -reordered)))
 
+
+# Get result by fixed threshold
+# pred_threshold = 0.20
+# test$pred_reordered_org <- predict(model, X)
+# test$pred_reordered <- ( test$pred_reordered_org > pred_threshold) * 1
+# f1 =calc_submit_f1_noPred( test )
+
+
+##### Find Best Fixed Threshold on F1 Score ###############
+
 best_f1 = 0
 best_none_threshold = 0
 
 
-test$pred_reordered_org <- predict(model, X)
-t_pred <- test[,c("order_id", "product_id", "pred_reordered_org" , "reordered")]
+best_f1 = 0
+best_threshold = 0
 
-# Add pred_rank by probability
-t_pred <- test_pred %>%
-  arrange(order_id,  desc(pred_reordered_org)) %>%
-  group_by(order_id) %>%
-  mutate(pred_rank = row_number()) 
+for(i in 19:21)
+{
+  acc_threshold = as.numeric(i/100)
+  f1 =calc_submit_f1(acc_threshold, test, model, X)
 
-submaxf1 <- test_pred %>%
-  group_by(order_id) %>%
-  summarise(products = exact_F1_max_none(pred_reordered_org, product_id))
+  if (best_f1 < f1) {
+    best_f1 = f1
+    best_threshold = acc_threshold
+  }
+}
+print(paste("best_threshold:", best_threshold, "best_f1 is:", best_f1 ))
 
-
-sub_maxf1_size <- test_pred %>%
-  group_by(order_id) %>%
-  summarise(submit_products_size = exact_F1_max_none_size(pred_reordered_org, product_id))
-
-
-
-t= test_pred
-sumission = submaxf1
-
-#Get result by fixed threshold 
-#pred_threshold = 0.20
-#test$pred_reordered_org <- predict(model, X)
-#test$pred_reordered <- ( test$pred_reordered_org > pred_threshold) * 1
-#f1 =calc_submit_f1_noPred( test )
-
-
-
-# ##### Find Best Fixed Threshold on F1 Score ###############
-# best_f1 = 0
-# best_threshold = 0
-# 
-# for(i in 19:21)
-# {
-#   acc_threshold = as.numeric(i/100)
-#   f1 =calc_submit_f1(acc_threshold, test, model, X)
-# 
-#   if (best_f1 < f1) {
-#     best_f1 = f1
-#     best_threshold = acc_threshold
-#   }
-# }
-# print(paste("best_threshold:", best_threshold, "best_f1 is:", best_f1 ))
-
-
-
-
-#### Add single produdct submission with None 
-t_single_prod <- t %>%
-  group_by(order_id) %>%
-  mutate(prodcnt = sum(pred_reordered)) %>%
-  filter(prodcnt == 1 & pred_reordered == 1 & pred_reordered_org <= Best_Add_None_Threshold)
-
-submission_singlewithNone <- submission[submission$order_id %in% t_single_prod$order_id,] %>%
-  group_by(order_id) %>%
-  summarise(
-    products = paste( products, "None", collapse = " ")
-  )
-
-submission_new <- submission[! submission$order_id %in% submission_singlewithNone$order_id,] 
-submission <- submission_new %>% bind_rows(submission_singlewithNone) %>% arrange(order_id)
-
-
-fact <- t %>%
-  filter(reordered == 1) %>%
-  group_by(order_id) %>%
-  summarise(
-    fact_products = paste(product_id, collapse = " ")
-  )
-
-fact_missing <- data.frame(
-  order_id = unique(t$order_id[!t$order_id %in% fact$order_id]),
-  fact_products = "None"
-)
-fact <- fact %>% bind_rows(fact_missing) %>% arrange(order_id)
-
-submission_fact <- fact %>% 
-  inner_join(submission, by = "order_id") 
-
-df <- data.frame(order_id = submission_fact$order_id, 
-                 fact = submission_fact$fact_products,
-                 predicted = submission_fact$products)
-
-df$f1 <- applyF1Score(df)
-calc_f1 = mean(df$f1)
-print(paste(
-  " f1 Score is:", calc_f1, 
-  "fact: ",nrow(fact),
-  "missing: ",nrow(missing),
-  "sub_fact: ",nrow(submission_fact) ))  
-return (calc_f1)
 
 
 
@@ -1109,6 +1108,7 @@ return (calc_f1)
 
 
 ########################### !!! Submit TO LB   ##################################
+
 
 # Train / Test datasets ---------------------------------------------------
 rm(orders_prod_prior_diff, data_op_lag1_diff)
@@ -1215,8 +1215,6 @@ missing <- data.frame(
 
 submission <- submission %>% bind_rows(missing) %>% arrange(order_id)
 
-
-
 ### Add None to single produdct submission 
 
 Add_None_Threshold_1p = 0.5
@@ -1321,7 +1319,8 @@ submission <- submission_3p %>% bind_rows(submission_3p_withNone) %>% arrange(or
 submission_4p <- submission[! submission$order_id %in% submission_4p_withNone$order_id,]
 submission <- submission_4p %>% bind_rows(submission_4p_withNone) %>% arrange(order_id)
 
-write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_ph2_try80_maxf_merge_pznone_1234P.csv", row.names = F)
+write.csv(submission, file = "C:/DEV/MarketBusket/Submit/submit_ph2_try84_AllVars.csv", row.names = F)
+
 
 
 
